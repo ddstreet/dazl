@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# PYTHON_ARGCOMPLETE_OK
+
+env PYTHONPATH="$(dirname "$(dirname "$(realpath "$0")")")" python3 -m dazl "$@"
