@@ -128,7 +128,24 @@ class TomlMap(MutableMapping):
 
 
 class TomlObject(SimpleNamespace):
+    __slots__ = ['__toml_map', '__parent', '__parent_attr']
+
     _KEY_CLASSMAP = {}
+    _KEY_DEFAULTS = {}
+
+    @classmethod
+    def _collection_class(cls):
+        class TomlObjectCollection(TomlObject):
+            def _get_value_class(self, key, value):
+                return cls
+        return TomlObjectCollection
+
+    @classmethod
+    def _json_encoder_default(cls, o):
+        if isinstance(o, TomlObject):
+            return {k: getattr(o, k) for k in dir(o) if not k.startswith('_')}
+        else:
+            return o
 
     @classmethod
     def _get_instance_class(cls, key, value, *, parent, parent_attr=None):
@@ -141,18 +158,27 @@ class TomlObject(SimpleNamespace):
         cls = cls._get_instance_class(key, value, parent=parent, parent_attr=None)
         return cls(value, parent=parent, parent_attr=parent_attr)
 
+    @classmethod
+    def _create_empty_instance(cls, empty_object, parent):
+        return cls(TomlMap(parent.__toml_map._toml_file, top_dir=parent.__toml_map._top_dir, toml_dict=empty_object), parent=parent)
+
     def __init__(self, toml_map, *, parent=None, parent_attr=None):
         assert isinstance(toml_map, TomlMap)
-        self._toml_map = toml_map
+        super().__init__(toml_map)
+        self.__toml_map = toml_map
         self.__parent = parent
         self.__parent_attr = parent_attr
-        super().__init__(self._toml_map)
-        for k, v in self._toml_map.items():
+        for k, v in toml_map.items():
             self._process_item(k, v)
+        self._add_defaults()
         self._check_instance()
 
     def _check_instance(self):
         pass
+
+    def _add_defaults(self):
+        for attr, default in self._KEY_DEFAULTS.items():
+            self.__dict__.setdefault(attr, default)
 
     @property
     def _parent(self):
@@ -167,18 +193,10 @@ class TomlObject(SimpleNamespace):
         return self.__parent_attr
 
     def __str__(self):
-        return str(self._toml_map)
+        return json.dumps(vars(self), indent=2, default=self._json_encoder_default)
 
     def __eq__(self, other):
-        return all((isinstance(other, self.__class__),
-                    self._eq_keys(other),
-                    self._eq_values(other)))
-
-    def _eq_keys(self, other):
-        return vars(self).keys() == vars(other).keys()
-
-    def _eq_values(self, other):
-        return vars(self).values()
+        return False # implement me
 
     def _get_value_class(self, key, value):
         if key in self._KEY_CLASSMAP:
@@ -197,8 +215,8 @@ class TomlObject(SimpleNamespace):
 
     def _process_item(self, key, value):
         if isinstance(value, list):
-            new_value = [self._get_value_instance(None, v) for v in value]
+            new_value = [self._get_value_instance(key, v) for v in value]
         else:
             new_value = self._get_value_instance(key, value)
         if value != new_value:
-            setattr(self, key, new_value)
+            self.__dict__[key] = new_value

@@ -32,6 +32,7 @@ class Main:
             return -1
 
         top_obj = TopObject(self.root_toml_file)
+
         print(top_obj)
 
         return 0
