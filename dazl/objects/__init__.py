@@ -1,222 +1,389 @@
 
+import inspect
 import json
 import tomllib
 
-from collections.abc import Mapping
+from abc import ABC
+from abc import abstractmethod
 from collections.abc import MutableMapping
+from collections.abc import MutableSequence
+from collections.abc import Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from functools import cache
 from functools import cached_property
 from functools import singledispatchmethod
 from glob import glob
+from itertools import chain
 from pathlib import Path
 from types import SimpleNamespace
 
-from .exception import NoParent
-from .exception import NoParentAttribute
 
-
-class TomlMap(MutableMapping):
+class FileBackedValue(ABC):
     @classmethod
-    def _json_encoder_default(cls, o):
-        return o._toml_dict if isinstance(o, TomlMap) else o
+    def _check_FBV(cls, value):
+        if not isinstance(value, FileBackedValue):
+            raise ValueError(f"Expected FileBackedValue type, got '{type(value).__name__}'")
 
-    def __init__(self, toml_file, *, top_dir=None, toml_dict=None):
-        self._toml_file = Path(toml_file).resolve(strict=True)
-        self._top_dir = top_dir or self._toml_dir
-        if not self._toml_file.is_relative_to(self._top_dir):
-            raise ValueError(f"File path cannot be outside top-level dir '{self._top_dir}': '{self._toml_file}'")
-        if not self._toml_file.exists():
-            raise FileNotFoundError(f"File does not exist: '{self._toml_file}'")
-        if toml_dict is None:
-            toml_dict = tomllib.loads(self._toml_file.read_text())
-        self._toml_dict = self._process_toml_dict(toml_dict)
+    @classmethod
+    def _FBV(cls, value, path):
+        if isinstance(value, FileBackedValue):
+            assert False # remove me!
+            return value
+        elif isinstance(value, dict):
+            return FileBackedDict(value, path)
+        elif isinstance(value, list):
+            return FileBackedList(value, path)
+        return FileBackedSimpleValue(value, path)
 
-    @cached_property
-    def _toml_dir(self):
-        return self._toml_file.parent
+    @abstractmethod
+    def _merge(self, value, path):
+        pass
+
+    def merge(self, value, path):
+        if type(value) != type(self.value):
+            raise ValueError(f"Can't merge 'type(value).__name__' type into 'type(self.value).__name__'")
+        self._merge(value, path)
+
+    @property
+    @abstractmethod
+    def value(self):
+        pass
+
+    @property
+    @abstractmethod
+    def path(self):
+        pass
+
+    @property
+    def path_dir(self):
+        return self.path.parent
+
+
+class FileBackedSimpleValue(FileBackedValue):
+    def __init__(self, value, path):
+        self._history = []
+        self._merge(value, path)
+
+    def _merge(self, value, path):
+        self._history.append((value, path))
+
+    @property
+    def value(self):
+        return self._history[-1][0]
+
+    @property
+    def path(self):
+        return self._history[-1][1]
+
+
+class FileBackedList(FileBackedValue, MutableSequence):
+    def __init__(self, sequence, path):
+        self._path = path
+        self._entries = []
+        self.merge(sequence, path)
+
+    def _merge(self, sequence, path):
+        self._entries.extend([self._FBV(s, path) for s in sequence])
+
+    def __getitem__(self, index):
+        return self._entries[index]
+
+    def __setitem__(self, index, value):
+        self._check_FBV(value)
+        self._entries[index] = value
+
+    def __delitem__(self, index):
+        del self._entries[index]
+
+    def __len__(self):
+        return len(self._entries)
+
+    def insert(self, index, value, /):
+        self._check_FBV(value)
+        self._entries.insert(index, value)
+
+    @property
+    def value(self):
+        return [e.value for e in self._entries]
+
+    @property
+    def path(self):
+        # This provides the path where this list was *initially* defined
+        return self._path
+
+
+class FileBackedDict(FileBackedValue, MutableMapping):
+    def __init__(self, mapping, path):
+        self._path = path
+        self._mapping = {}
+        self.merge(mapping, path)
+
+    def _merge(self, mapping, path):
+        for k, v in mapping.items():
+            try:
+                self[k].merge(v, path)
+            except KeyError:
+                self[k] = self._FBV(v, path)
+
+    def __getitem__(self, key):
+        return self._mapping[key]
+
+    def __setitem__(self, key, value):
+        self._check_FBV(value)
+        self._mapping[key] = value
+
+    def __delitem__(self, key):
+        del self._mapping[key]
+
+    def __iter__(self):
+        return iter(self._mapping)
+
+    def __len__(self):
+        return len(self._mapping)
+
+    @property
+    def value(self):
+        return {k: v.value for k, v in self._mapping.items()}
+
+    @property
+    def path(self):
+        # This provides the path where this dict was *initially* defined
+        return self._path
+
+
+class FBVContainer(ABC):
+    @classmethod
+    def _get_object_class(cls, fbv, key):
+        return DazlObject
+
+    @classmethod
+    def _get_list_class(cls, fbv, key):
+        return DazlList
+
+    @classmethod
+    def _json_encoder_default(cls, value):
+        assert isinstance(value, FBVContainer)
+        return value._json_value
+
+    @classmethod
+    @abstractmethod
+    def _required_fbv_class(cls):
+        pass
+
+    @classmethod
+    @abstractmethod
+    def _get_empty_value(cls):
+        pass
+
+    @classmethod
+    def _create_empty(cls, parent):
+        return FileBackedValue._FBV(cls._get_empty_value(), parent._fbv.path)
+
+    def __init__(self, fbv, *args, **kwargs):
+        required_fbv_class = self._required_fbv_class()
+        if not isinstance(fbv, required_fbv_class):
+            raise TypeError(f"{self.__class__.__name__} value must be instance of {required_fbv_class.__name__}, got '{type(fbv).__name__}'")
+        self.__fbv_containers = {}
+        self.__fbv = fbv
+        super().__init__(*args, **kwargs)
+        self._process()
+        self._check()
 
     def __str__(self):
         return json.dumps(self, indent=2, default=self._json_encoder_default)
 
-    def __getitem__(self, key):
-        return self._toml_dict[key]
+    @property
+    def _fbv(self):
+        return self.__fbv
 
-    def __setitem__(self, key, value):
-        self._toml_dict[key] = value
+    def _process(self):
+        pass
 
-    def __delitem__(self, key):
-        del self._toml_dict[key]
+    def _check(self):
+        pass
 
-    def __iter__(self):
-        return iter(self._toml_dict)
+    @property
+    @abstractmethod
+    def _json_value(self):
+        pass
 
-    def __len__(self):
-        return len(self._toml_dict)
+    @singledispatchmethod
+    def _get_value(self, fbv, key):
+        raise TypeError(f"{self.__name__} value must be instance of FileBackedValue, got '{type(fbv).__name__}'")
 
-    def _process_toml_dict(self, toml_dict):
-        return self._process_special_keys(self._process_items(toml_dict))
+    @_get_value.register
+    def _(self, fbv: FileBackedValue, key):
+        return fbv.value
 
-    def _process_items(self, toml_dict):
-        return {self._process_key(k): self._process_value(v)
-                for k, v in toml_dict.items()}
+    @_get_value.register
+    def _(self, fbd: FileBackedDict, key):
+        return self._get_fbv_container(fbd, key, self._get_object_class)
 
-    def _process_key(self, key):
-        return key.replace('-', '_')
+    @_get_value.register
+    def _(self, fbl: FileBackedList, key):
+        return self._get_fbv_container(fbl, key, self._get_list_class)
 
-    def _process_value(self, value):
-        if isinstance(value, list):
-            return [self._process_value(v) for v in value]
-        if isinstance(value, dict):
-            return TomlMap(self._toml_file, top_dir=self._top_dir, toml_dict=value)
-        return value
+    def _get_fbv_container(self, fbv, key, get_class):
+        if id(fbv) not in self.__fbv_containers:
+            cls = get_class(fbv, key)
+            self.__fbv_containers[id(fbv)] = cls(fbv, parent=self)
+        return self.__fbv_containers[id(fbv)]
 
-    def _process_special_keys(self, toml_dict):
-        return self._process_includes(toml_dict.get('includes'), toml_dict)
 
-    def _process_includes(self, includes, toml_dict):
-        if includes is None:
-            return toml_dict
-        if isinstance(includes, str):
-            return self._process_includes([includes], toml_dict)
-        if isinstance(includes, list):
+class FBVObject(FBVContainer, ABC):
+    _KEY_CLASSMAP = {}
+
+    @classmethod
+    def _get_object_class(cls, fbv, key):
+        try:
+            return cls._KEY_CLASSMAP[key]
+        except KeyError:
+            return super()._get_object_class(fbv, key)
+
+    @classmethod
+    def _get_list_class(cls, fbv, key):
+        try:
+            return cls._KEY_CLASSMAP[key]
+        except KeyError:
+            return super()._get_list_class(fbv, key)
+
+    @classmethod
+    def _get_object_list_class(cls):
+        """Return a class that accepts a list and uses this class for
+        all list values, e.g. [cls(), cls(), ...]
+
+        """
+        class DazlObjectList(DazlList):
+            @classmethod
+            def _get_object_class(innercls, fbv, key):
+                return cls
+        return DazlObjectList
+
+    @classmethod
+    def _get_named_object_list_class(cls):
+        """Return a class that accepts a dict and uses this class for
+        all dict values, e.g. {name1=cls(), name2=cls(), ...}
+
+        """
+        class DazlNamedObjectList(DazlObject):
+            @classmethod
+            def _get_object_class(innercls, fbv, key):
+                return cls
+        return DazlNamedObjectList
+
+    @classmethod
+    def _required_fbv_class(cls):
+        return FileBackedDict
+
+    @classmethod
+    def _get_empty_value(cls):
+        return {}
+
+    def __dir__(self):
+        return super().__dir__() + list(self._fbv.keys())
+
+    @property
+    def _json_value(self):
+        return {k: getattr(self, k) for k in dir(self) if not k.startswith('_')}
+
+    def _process(self):
+        while 'includes' in self._fbv:
+            self._process_includes()
+
+        for k, cls in self._KEY_CLASSMAP.items():
+            if k not in self._fbv:
+                self._fbv[k] = cls._create_empty(self)
+
+    def _process_includes(self):
+        includes = self._fbv.pop('includes')
+        if isinstance(includes.value, str):
+            self._process_include(includes.value, includes.path_dir)
+        else:
             for include in includes:
-                for path in self._resolve_relative_glob_paths(include):
-                    self._merge_maps(toml_dict, TomlMap(path, top_dir=self._top_dir), insert_before_key='includes')
-            toml_dict.pop('includes', None)
-            return toml_dict
-        raise TypeError(f"Invalid 'includes' value type '{type(includes).__name__}'")
+                self._process_include(include.value, include.path_dir)
+
+    def _process_include(self, include, path_dir):
+        for path in self._resolve_relative_glob_paths(include, path_dir):
+            self._fbv.merge(tomllib.loads(path.read_text()), path)
 
     def _check_not_absolute_path(self, path):
         if Path(path).is_absolute():
             raise ValueError(f"File path cannot be absolute: '{path}'")
 
-    def _resolve_relative_glob_paths(self, path):
+    def _resolve_relative_glob_paths(self, path, root_dir):
         self._check_not_absolute_path(path)
-        for globbed_subpath in sorted(glob(path, root_dir=self._toml_dir)):
-            yield self._toml_dir / globbed_subpath
+        for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
+            yield root_dir / globbed_subpath
 
-    def _resolve_relative_path(self, path):
-        self._check_not_absolute_path(path)
-        return self._toml_dir / path
-
-    def _merge_maps(self, m1, m2, *, insert_before_key=None):
-        for k, v2 in m2.items():
-            try:
-                v1 = m1[k]
-            except KeyError:
-                self._insert_key_before(m1, k, v2, insert_before_key)
-            else:
-                if type(v1) != type(v2):
-                    raise ValueError(f"Type mismatch for key '{k}': {type(v1).__name__} != {type(v2).__name__}")
-                m1[k] = self._merge_values(k, v1, v2)
-        return m1
-
-    def _merge_values(self, k, v1, v2):
-        if isinstance(v1, list):
-            return v1 + v2
-        if isinstance(v1, Mapping):
-            return self._merge_maps(v1, v2)
-        return v2
-
-    def _insert_key_before(self, m, key, value, insert_before_key):
-        m[key] = value
-        move = False
-        for k in list(m.keys()):
-            if k == insert_before_key:
-                move = True
-            if move:
-                m[k] = m.pop(k)
-
-
-class TomlObject(SimpleNamespace):
-    __slots__ = ['__toml_map', '__parent', '__parent_attr']
-
-    _KEY_CLASSMAP = {}
-    _KEY_DEFAULTS = {}
-
-    @classmethod
-    def _collection_class(cls):
-        class TomlObjectCollection(TomlObject):
-            def _get_value_class(self, key, value):
-                return cls
-        return TomlObjectCollection
-
-    @classmethod
-    def _json_encoder_default(cls, o):
-        if isinstance(o, TomlObject):
-            return {k: getattr(o, k) for k in dir(o) if not k.startswith('_')}
-        else:
-            return o
-
-    @classmethod
-    def _get_instance_class(cls, key, value, *, parent, parent_attr=None):
-        return cls
-
-    @classmethod
-    def _create_instance(cls, key, value, *, parent, parent_attr=None):
-        if not isinstance(value, TomlMap):
-            raise TypeError(f"TomlObject value must be instance of TomlMap, got '{type(value).__name__}'")
-        cls = cls._get_instance_class(key, value, parent=parent, parent_attr=None)
-        return cls(value, parent=parent, parent_attr=parent_attr)
-
-    @classmethod
-    def _create_empty_instance(cls, empty_object, parent):
-        return cls(TomlMap(parent.__toml_map._toml_file, top_dir=parent.__toml_map._top_dir, toml_dict=empty_object), parent=parent)
-
-    def __init__(self, toml_map, *, parent=None, parent_attr=None):
-        assert isinstance(toml_map, TomlMap)
-        super().__init__(toml_map)
-        self.__toml_map = toml_map
-        self.__parent = parent
-        self.__parent_attr = parent_attr
-        for k, v in toml_map.items():
-            self._process_item(k, v)
-        self._add_defaults()
-        self._check_instance()
-
-    def _check_instance(self):
+    @property
+    @abstractmethod
+    def _top_dir(self):
         pass
 
-    def _add_defaults(self):
-        for attr, default in self._KEY_DEFAULTS.items():
-            self.__dict__.setdefault(attr, default)
+    def __getattribute__(self, name):
+        if name.startswith('_'):
+            return super().__getattribute__(name)
+        try:
+            fbv = self._fbv[name]
+        except KeyError:
+            return super().__getattribute__(name)
+        return self._get_value(fbv, name)
+
+    def __setattr__(self, name, value):
+        if not name.startswith('_'):
+            raise AttributeError(f"Class {self.__class__.__name__} does not allow setting attributes ('{name}')")
+        super().__setattr__(name, value)
+
+
+class FBVList(FBVContainer, Sequence):
+    @classmethod
+    def _required_fbv_class(cls):
+        return FileBackedList
+
+    @classmethod
+    def _get_empty_value(cls):
+        return []
+
+    @property
+    def _json_value(self):
+        return list(self)
+
+    def __getitem__(self, index):
+        return self._get_value(self._fbv[index], index)
+
+    def __len__(self):
+        return len(self._fbv)
+
+
+class FBVChild:
+    def __init__(self, *args, parent, **kwargs):
+        self.__parent = parent
+        super().__init__(*args, **kwargs)
 
     @property
     def _parent(self):
-        if self.__parent is None:
-            raise NoParent(self)
         return self.__parent
 
     @property
-    def _parent_attr(self):
-        if self.__parent_attr is None:
-            raise NoParentAttribute(self._parent, self)
-        return self.__parent_attr
+    def _top_dir(self):
+        return self._parent._top_dir
 
-    def __str__(self):
-        return json.dumps(vars(self), indent=2, default=self._json_encoder_default)
 
-    def __eq__(self, other):
-        return False # implement me
+class DazlObject(FBVChild, FBVObject):
+    pass
 
-    def _get_value_class(self, key, value):
-        if key in self._KEY_CLASSMAP:
-            return self._KEY_CLASSMAP[key]
-        if isinstance(value, TomlMap):
-            return TomlObject
-        return None
 
-    def _get_value_instance(self, key, value):
-        cls = self._get_value_class(key, value)
-        if cls:
-            if not issubclass(cls, TomlObject):
-                raise TypeError(f"Value class must be subclass of TomlObject, got '{cls.__name__}'")
-            return cls._create_instance(key, value, parent=self, parent_attr=key)
-        return value
+class DazlList(FBVChild, FBVList):
+    pass
 
-    def _process_item(self, key, value):
-        if isinstance(value, list):
-            new_value = [self._get_value_instance(key, v) for v in value]
-        else:
-            new_value = self._get_value_instance(key, value)
-        if value != new_value:
-            self.__dict__[key] = new_value
+
+class DazlTopObject(FBVObject):
+    def __init__(self, path, *args, **kwargs):
+        path = Path(path).resolve(strict=True)
+        self.__top_dir = path.parent
+        super().__init__(FileBackedDict(tomllib.loads(path.read_text()), path))
+
+    @property
+    def _top_dir(self):
+        return self.__top_dir

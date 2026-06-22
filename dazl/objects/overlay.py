@@ -1,6 +1,6 @@
 
-from . import TomlObject
+from . import DazlList
 
 
-class Overlay(TomlObject):
+class Overlay(DazlList):
     pass

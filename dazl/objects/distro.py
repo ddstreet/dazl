@@ -1,11 +1,11 @@
 
-from . import TomlObject
+from . import DazlObject
 from .distro_version import DistroVersion
 
 
-class Distro(TomlObject):
+class Distro(DazlObject):
     _KEY_CLASSMAP = {
-        'versions': DistroVersion._collection_class(),
+        # 'versions': DistroVersion._collection_class(),
     }
     _KEY_DEFAULTS = {
         'description': '',

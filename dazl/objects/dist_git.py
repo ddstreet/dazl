@@ -1,10 +1,10 @@
 
 from functools import cached_property
 
-from . import TomlObject
+from . import DazlObject
 
 
-class DistGit(TomlObject):
+class DistGit(DazlObject):
     @classmethod
     def _get_instance_class(cls, key, value, *, parent, parent_attr=None):
         if value.get('type') == 'local':

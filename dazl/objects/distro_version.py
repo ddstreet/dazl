@@ -1,8 +1,8 @@
 
-from . import TomlObject
+from . import DazlObject
 
 
-class DistroVersion(TomlObject):
+class DistroVersion(DazlObject):
     _KEY_DEFAULTS = {
         'description': '',
         'dist_git_branch': '',

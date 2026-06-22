@@ -1,9 +1,9 @@
 
-from . import TomlObject
+from . import DazlObject
 from .component import Component
 
 
-class ComponentGroup(TomlObject):
+class ComponentGroup(DazlObject):
     _KEY_CLASSMAP = {
         'default_component_config': Component,
     }
