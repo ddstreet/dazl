@@ -16,6 +16,9 @@ class Main:
     @cached_property
     def opts(self):
         parser = argparse.ArgumentParser(prog='dazl')
+        parser.add_argument('--no-defaults',
+                            action='store_true',
+                            help='Do not include default values')
         parser.add_argument('-r', '--resolve-paths',
                             action='store_true',
                             help='Resolve all paths to absolute paths')
@@ -39,7 +42,9 @@ class Main:
             print(f"Root TOML file '{self.root_toml_file}' not found")
             return -1
 
-        top_obj = TopObject(self.root_toml_file, resolve_paths=self.opts.resolve_paths)
+        top_obj = TopObject(self.root_toml_file,
+                            no_defaults=self.opts.no_defaults,
+                            resolve_paths=self.opts.resolve_paths)
 
         if not self.opts.component:
             print(top_obj)

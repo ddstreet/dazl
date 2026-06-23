@@ -2,6 +2,7 @@
 from functools import cached_property
 
 from ..exception import ConfigError
+from ..exception import NoConfig
 from . import DazlObject
 from . import FBVFallbackObject
 from . import NamedDazlObject
@@ -25,14 +26,20 @@ class NamedComponent(Component, NamedDazlObject):
     pass
 
 
-class NamedComponent(FBVFallbackObject, Component, NamedDazlObject):
+class NamedComponentWithFallback(FBVFallbackObject, NamedComponent):
     @cached_property
     def _fallback_list(self):
-        groups = self._top_object.component_groups
-        my_groups = []
-        for name in groups:
-            group = getattr(groups, name)
-            if self._name in group.components:
-                my_groups.append(group.default_component_config)
+        return self._fallback_component_groups + self._fallback_project_distro_group
 
-        return my_groups
+    @property
+    def _fallback_component_groups(self):
+        return [group.default_component_config
+                for group in self._top_object.component_groups._values()
+                if self._name in group.components]
+
+    @property
+    def _fallback_project_distro_group(self):
+        try:
+            return [self._top_object.project.get_default_distro_version().default_component_config]
+        except NoConfig:
+            return []
