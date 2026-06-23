@@ -1,8 +1,8 @@
 
 
-class NoConfiguration(Exception):
+class NoConfig(Exception):
     pass
 
 
-class ConfigurationError(Exception):
+class ConfigError(Exception):
     pass

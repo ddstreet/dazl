@@ -1,15 +1,15 @@
 
-from . import DazlTopObject
-from .component import Component
-from .component_group import ComponentGroup
-from .distro import Distro
+from . import TopDazlObject
+from .component import NamedComponent
+from .component_group import NamedComponentGroup
+from .distro import NamedDistro
 from .project import Project
 
 
-class TopObject(DazlTopObject):
+class TopObject(TopDazlObject):
     _KEY_CLASSMAP = {
-        'component_groups': ComponentGroup._get_named_object_list_class(),
-        'components': Component._get_named_object_list_class(),
-        'distros': Distro._get_named_object_list_class(),
+        'component_groups': NamedComponentGroup._get_named_object_list_class(),
+        'components': NamedComponent._get_named_object_list_class(),
+        'distros': NamedDistro._get_named_object_list_class(),
         'project': Project,
     }

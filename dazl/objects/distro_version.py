@@ -1,5 +1,6 @@
 
 from . import DazlObject
+from . import NamedDazlObject
 
 
 class DistroVersion(DazlObject):
@@ -9,3 +10,7 @@ class DistroVersion(DazlObject):
         'mock_config_x86_64': '',
         'mock_config_aarch64': '',
     }
+
+
+class NamedDistroVersion(DistroVersion, NamedDazlObject):
+    pass

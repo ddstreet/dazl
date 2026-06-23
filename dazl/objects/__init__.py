@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from functools import cache
 from functools import cached_property
+from functools import partial
 from functools import singledispatchmethod
 from glob import glob
 from itertools import chain
@@ -158,14 +159,6 @@ class FileBackedDict(FileBackedValue, MutableMapping):
 
 class FBVContainer(ABC):
     @classmethod
-    def _get_object_class(cls, fbv, key):
-        return DazlObject
-
-    @classmethod
-    def _get_list_class(cls, fbv, key):
-        return DazlList
-
-    @classmethod
     @abstractmethod
     def _required_fbv_class(cls):
         pass
@@ -191,6 +184,12 @@ class FBVContainer(ABC):
         super().__init__(*args, **kwargs)
         self._process()
         self._check()
+
+    def _get_object_class(self, fbv, key):
+        return DazlObject
+
+    def _get_list_class(self, fbv, key):
+        return DazlList
 
     @property
     @abstractmethod
@@ -227,10 +226,11 @@ class FBVContainer(ABC):
         return self._get_fbv_container(fbl, key, self._get_list_class)
 
     def _get_fbv_container(self, fbv, key, get_class):
-        if id(fbv) not in self.__fbv_containers:
+        fbvid = id(fbv)
+        if fbvid not in self.__fbv_containers:
             cls = get_class(fbv, key)
-            self.__fbv_containers[id(fbv)] = cls(fbv, parent=self)
-        return self.__fbv_containers[id(fbv)]
+            self.__fbv_containers[fbvid] = cls(fbv, parent=self)
+        return self.__fbv_containers[fbvid]
 
 
 class FBVObject(FBVContainer, ABC):
@@ -238,42 +238,11 @@ class FBVObject(FBVContainer, ABC):
     _KEY_DEFAULTS = {}
 
     @classmethod
-    def _get_object_class(cls, fbv, key):
-        try:
-            return cls._KEY_CLASSMAP[key]
-        except KeyError:
-            return super()._get_object_class(fbv, key)
-
-    @classmethod
-    def _get_list_class(cls, fbv, key):
-        try:
-            return cls._KEY_CLASSMAP[key]
-        except KeyError:
-            return super()._get_list_class(fbv, key)
-
-    @classmethod
     def _get_object_list_class(cls):
-        """Return a class that accepts a list and uses this class for
-        all list values, e.g. [cls(), cls(), ...]
-
+        """Return class that accepts a list and uses this class for
+        all list values, e.g. [cls(), cls(), ...].
         """
-        class DazlObjectList(DazlList):
-            @classmethod
-            def _get_object_class(innercls, fbv, key):
-                return cls
-        return DazlObjectList
-
-    @classmethod
-    def _get_named_object_list_class(cls):
-        """Return a class that accepts a dict and uses this class for
-        all dict values, e.g. {name1=cls(), name2=cls(), ...}
-
-        """
-        class DazlNamedObjectList(DazlObject):
-            @classmethod
-            def _get_object_class(innercls, fbv, key):
-                return cls
-        return DazlNamedObjectList
+        return partial(DazlObjectList, child_class=cls)
 
     @classmethod
     def _required_fbv_class(cls):
@@ -283,29 +252,31 @@ class FBVObject(FBVContainer, ABC):
     def _get_default_value(cls):
         return {}
 
-    def __dir__(self):
-        return list(set(super().__dir__() + list(self._fbv.keys())))
+    def __init__(self, *args, **kwargs):
+        self.__defaults = {}
+        super().__init__(*args, **kwargs)
+
+    def _get_object_class(self, fbv, key):
+        try:
+            return self._KEY_CLASSMAP[key]
+        except KeyError:
+            return super()._get_object_class(fbv, key)
+
+    def _get_list_class(self, fbv, key):
+        try:
+            return self._KEY_CLASSMAP[key]
+        except KeyError:
+            return super()._get_list_class(fbv, key)
 
     @property
     def _json(self):
-        return {k: self._try_json(getattr(self, k))
-                for k in dir(self) if not k.startswith('_')}
+        return {k: self._try_json(getattr(self, k)) for k in self}
 
     def _process(self):
         while 'includes' in self._fbv:
             self._process_includes()
 
-        for k, cls in self._KEY_CLASSMAP.items():
-            if k not in self._fbv:
-                try:
-                    value = self._KEY_DEFAULTS[k]
-                except KeyError:
-                    value = cls._get_default_value()
-                self._fbv[k] = FileBackedValue._FBV(value, self._fbv.path)
-
-        for k, default in self._KEY_DEFAULTS.items():
-            if k not in self._fbv:
-                self._fbv[k] = FileBackedValue._FBV(default, self._fbv.path)
+        self._setup_defaults()
 
     def _process_includes(self):
         includes = self._fbv.pop('includes')
@@ -328,6 +299,19 @@ class FBVObject(FBVContainer, ABC):
         for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
             yield root_dir / globbed_subpath
 
+    def _setup_defaults(self):
+        for k, cls in self._KEY_CLASSMAP.items():
+            if k not in self._fbv:
+                try:
+                    value = self._KEY_DEFAULTS[k]
+                except KeyError:
+                    value = cls._get_default_value()
+                self.__defaults[k] = FileBackedValue._FBV(value, self._fbv.path)
+
+        for k, default in self._KEY_DEFAULTS.items():
+            if k not in self._fbv:
+                self.__defaults[k] = FileBackedValue._FBV(default, self._fbv.path)
+
     @property
     @abstractmethod
     def _top_object(self):
@@ -338,19 +322,59 @@ class FBVObject(FBVContainer, ABC):
     def _top_dir(self):
         pass
 
+    def __iter__(self):
+        return iter(set(chain(self._fbv.keys(), self.__defaults.keys())))
+
     def __getattribute__(self, name):
         if name.startswith('_'):
             return super().__getattribute__(name)
-        try:
-            fbv = self._fbv[name]
-        except KeyError:
-            return super().__getattribute__(name)
-        return self._get_value(fbv, name)
+        if name in self._fbv:
+            return self._get_value(self._fbv[name], name)
+        if name in self.__defaults:
+            return self._get_value(self.__defaults[name], name)
+        return super().__getattribute__(name)
 
     def __setattr__(self, name, value):
         if not name.startswith('_'):
             raise AttributeError(f"Class {self.__class__.__name__} does not allow setting attributes ('{name}')")
         super().__setattr__(name, value)
+
+
+class FBVNamedObject(FBVObject):
+    @classmethod
+    def _get_named_object_list_class(cls):
+        """Return class that accepts a dict and uses this class for
+        all dict values and provides the corresponding key name as the
+        name of each value, e.g. {name1: cls(), name2: cls(), ...}.
+        """
+        return partial(DazlNamedObjectCollection, child_class=cls)
+
+    def __init__(self, *args, name, **kwargs):
+        self.__name = name
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _name(self):
+        return self.__name
+
+
+class FBVFallbackObject(FBVObject, ABC):
+    @property
+    @abstractmethod
+    def _fallback_list(self):
+        pass
+
+    def __iter__(self):
+        return iter(set(chain(super().__iter__(), chain.from_iterable(map(iter, self._fallback_list)))))
+
+    def __getattribute__(self, name):
+        try:
+            return super().__getattribute__(name)
+        except AttributeError:
+            for fallback in self._fallback_list:
+                with suppress(AttributeError):
+                    return getattr(fallback, name)
+            raise
 
 
 class FBVList(FBVContainer, Sequence):
@@ -391,6 +415,24 @@ class FBVChild:
         return self._parent._top_dir
 
 
+class FBVObjectCollection(FBVContainer):
+    def __init__(self, *args, child_class, **kwargs):
+        self.__child_class = child_class
+        super().__init__(*args, **kwargs)
+
+    def _get_object_class(self, fbv, key):
+        return self.__child_class
+
+
+class FBVNamedObjectCollection(FBVObjectCollection):
+    def __init__(self, *args, child_class, **kwargs):
+        assert issubclass(child_class, FBVNamedObject)
+        super().__init__(*args, child_class=child_class, **kwargs)
+
+    def _get_object_class(self, fbv, key):
+        return partial(super()._get_object_class(fbv, key), name=key)
+
+
 class DazlObject(FBVChild, FBVObject):
     pass
 
@@ -399,7 +441,19 @@ class DazlList(FBVChild, FBVList):
     pass
 
 
-class DazlTopObject(FBVObject):
+class DazlObjectCollection(FBVObjectCollection, DazlList):
+    pass
+
+
+class DazlNamedObjectCollection(FBVNamedObjectCollection, DazlObject):
+    pass
+
+
+class NamedDazlObject(DazlObject, FBVNamedObject):
+    pass
+
+
+class TopDazlObject(FBVObject):
     def __init__(self, path, *args, resolve_paths=False, **kwargs):
         path = Path(path).resolve(strict=True)
         self.__resolve_paths = resolve_paths

@@ -1,6 +1,6 @@
 
-from ..exception import ConfigurationError
-from ..exception import NoConfiguration
+from ..exception import ConfigError
+from ..exception import NoConfig
 from . import DazlObject
 
 
@@ -20,18 +20,18 @@ class Project(DazlObject):
     def get_default_distro(self):
         name = self.default_distro.name
         if not name:
-            raise NoConfiguration('Project has no default distro')
+            raise NoConfig('Project has no default distro')
 
         try:
             distro = getattr(self._top_object.distros, name)
         except AttributeError:
-            raise ConfigurationError(f"No configuration found for distro name '{name}'")
+            raise ConfigError(f"No configuration found for distro name '{name}'")
 
         version = self.default_distro.version
         if not version:
             version = distro.default_version
 
         try:
-            return = getattr(distro, version)
+            return getattr(distro, version)
         except AttributeError:
-            raise ConfigurationError(f"No configuration found for distro name '{name}' version '{version}'")
+            raise ConfigError(f"No configuration found for distro name '{name}' version '{version}'")

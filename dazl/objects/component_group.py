@@ -1,5 +1,6 @@
 
 from . import DazlObject
+from . import NamedDazlObject
 from .component import Component
 
 
@@ -11,3 +12,7 @@ class ComponentGroup(DazlObject):
         'components': [],
         'default_component_config': {},
     }
+
+
+class NamedComponentGroup(ComponentGroup, NamedDazlObject):
+    pass
