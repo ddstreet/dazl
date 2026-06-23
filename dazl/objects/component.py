@@ -1,6 +1,4 @@
 
-from functools import cached_property
-
 from . import DazlObject
 from .dist_git import DistGit
 from .overlay import Overlay
@@ -13,10 +11,6 @@ class Component(DazlObject):
         'overlays': Overlay,
         'build': Build,
     }
-
-    @cached_property
-    def release(self):
-        try:
-            return super().release
-        except AttributeError:
-            return {'calculation': 'auto'}
+    _KEY_DEFAULTS = {
+        'release': {'calculation': 'auto'},
+    }

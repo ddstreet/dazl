@@ -8,7 +8,6 @@ class ComponentGroup(DazlObject):
         'default_component_config': Component,
     }
     _KEY_DEFAULTS = {
-        'description': '',
         'components': [],
         'default_component_config': {},
     }

@@ -1,5 +1,6 @@
 
 import argparse
+import json
 import sys
 
 from functools import cached_property
@@ -15,6 +16,13 @@ class Main:
     @cached_property
     def opts(self):
         parser = argparse.ArgumentParser(prog='dazl')
+        parser.add_argument('-r', '--resolve-paths',
+                            action='store_true',
+                            help='Resolve all paths to absolute paths')
+        parser.add_argument('-c', '--component',
+                            action='append',
+                            default=[],
+                            help='Show only specified component(s)')
         parser.add_argument('root_toml_file',
                             nargs='?',
                             default=DEFAULT_ROOT_TOML_FILE,
@@ -31,8 +39,13 @@ class Main:
             print(f"Root TOML file '{self.root_toml_file}' not found")
             return -1
 
-        top_obj = TopObject(self.root_toml_file)
+        top_obj = TopObject(self.root_toml_file, resolve_paths=self.opts.resolve_paths)
 
-        print(top_obj)
+        if not self.opts.component:
+            print(top_obj)
+        else:
+            components = {c: getattr(top_obj.components, c)._json for c in self.opts.component}
+            print(json.dumps(components, indent=2))
+            
 
         return 0

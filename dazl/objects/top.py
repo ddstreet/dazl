@@ -13,6 +13,3 @@ class TopObject(DazlTopObject):
         'distros': Distro._get_named_object_list_class(),
         'project': Project,
     }
-
-    def __init__(self, top_toml_file):
-        super().__init__(top_toml_file)

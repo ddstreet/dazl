@@ -119,8 +119,12 @@ class FileBackedDict(FileBackedValue, MutableMapping):
         self._mapping = {}
         self.merge(mapping, path)
 
+    def _convert_key(self, key):
+        return key.replace('-', '_')
+
     def _merge(self, mapping, path):
         for k, v in mapping.items():
+            k = self._convert_key(k)
             try:
                 self[k].merge(v, path)
             except KeyError:
@@ -162,23 +166,21 @@ class FBVContainer(ABC):
         return DazlList
 
     @classmethod
-    def _json_encoder_default(cls, value):
-        assert isinstance(value, FBVContainer)
-        return value._json_value
-
-    @classmethod
     @abstractmethod
     def _required_fbv_class(cls):
         pass
 
     @classmethod
     @abstractmethod
-    def _get_empty_value(cls):
+    def _get_default_value(cls):
         pass
 
     @classmethod
-    def _create_empty(cls, parent):
-        return FileBackedValue._FBV(cls._get_empty_value(), parent._fbv.path)
+    def _try_json(cls, value):
+        try:
+            return value._json
+        except AttributeError:
+            return value
 
     def __init__(self, fbv, *args, **kwargs):
         required_fbv_class = self._required_fbv_class()
@@ -190,8 +192,13 @@ class FBVContainer(ABC):
         self._process()
         self._check()
 
+    @property
+    @abstractmethod
+    def _json(self):
+        pass
+
     def __str__(self):
-        return json.dumps(self, indent=2, default=self._json_encoder_default)
+        return json.dumps(self._json, indent=2)
 
     @property
     def _fbv(self):
@@ -201,11 +208,6 @@ class FBVContainer(ABC):
         pass
 
     def _check(self):
-        pass
-
-    @property
-    @abstractmethod
-    def _json_value(self):
         pass
 
     @singledispatchmethod
@@ -233,6 +235,7 @@ class FBVContainer(ABC):
 
 class FBVObject(FBVContainer, ABC):
     _KEY_CLASSMAP = {}
+    _KEY_DEFAULTS = {}
 
     @classmethod
     def _get_object_class(cls, fbv, key):
@@ -277,15 +280,16 @@ class FBVObject(FBVContainer, ABC):
         return FileBackedDict
 
     @classmethod
-    def _get_empty_value(cls):
+    def _get_default_value(cls):
         return {}
 
     def __dir__(self):
-        return super().__dir__() + list(self._fbv.keys())
+        return list(set(super().__dir__() + list(self._fbv.keys())))
 
     @property
-    def _json_value(self):
-        return {k: getattr(self, k) for k in dir(self) if not k.startswith('_')}
+    def _json(self):
+        return {k: self._try_json(getattr(self, k))
+                for k in dir(self) if not k.startswith('_')}
 
     def _process(self):
         while 'includes' in self._fbv:
@@ -293,7 +297,15 @@ class FBVObject(FBVContainer, ABC):
 
         for k, cls in self._KEY_CLASSMAP.items():
             if k not in self._fbv:
-                self._fbv[k] = cls._create_empty(self)
+                try:
+                    value = self._KEY_DEFAULTS[k]
+                except KeyError:
+                    value = cls._get_default_value()
+                self._fbv[k] = FileBackedValue._FBV(value, self._fbv.path)
+
+        for k, default in self._KEY_DEFAULTS.items():
+            if k not in self._fbv:
+                self._fbv[k] = FileBackedValue._FBV(default, self._fbv.path)
 
     def _process_includes(self):
         includes = self._fbv.pop('includes')
@@ -315,6 +327,11 @@ class FBVObject(FBVContainer, ABC):
         self._check_not_absolute_path(path)
         for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
             yield root_dir / globbed_subpath
+
+    @property
+    @abstractmethod
+    def _top_object(self):
+        pass
 
     @property
     @abstractmethod
@@ -342,12 +359,12 @@ class FBVList(FBVContainer, Sequence):
         return FileBackedList
 
     @classmethod
-    def _get_empty_value(cls):
+    def _get_default_value(cls):
         return []
 
     @property
-    def _json_value(self):
-        return list(self)
+    def _json(self):
+        return [self._try_json(e) for e in self]
 
     def __getitem__(self, index):
         return self._get_value(self._fbv[index], index)
@@ -366,6 +383,10 @@ class FBVChild:
         return self.__parent
 
     @property
+    def _top_object(self):
+        return self._parent._top_object
+
+    @property
     def _top_dir(self):
         return self._parent._top_dir
 
@@ -379,10 +400,19 @@ class DazlList(FBVChild, FBVList):
 
 
 class DazlTopObject(FBVObject):
-    def __init__(self, path, *args, **kwargs):
+    def __init__(self, path, *args, resolve_paths=False, **kwargs):
         path = Path(path).resolve(strict=True)
+        self.__resolve_paths = resolve_paths
         self.__top_dir = path.parent
         super().__init__(FileBackedDict(tomllib.loads(path.read_text()), path))
+
+    @property
+    def _resolve_paths(self):
+        return self.__resolve_paths
+
+    @property
+    def _top_object(self):
+        return self
 
     @property
     def _top_dir(self):
