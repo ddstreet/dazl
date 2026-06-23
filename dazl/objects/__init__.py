@@ -236,6 +236,7 @@ class FBVContainer(ABC):
 class FBVObject(FBVContainer, ABC):
     _KEY_CLASSMAP = {}
     _KEY_DEFAULTS = {}
+    _KEY_CONVERSIONS = {}
 
     @classmethod
     def _get_object_list_class(cls):
@@ -276,7 +277,8 @@ class FBVObject(FBVContainer, ABC):
         while 'includes' in self._fbv:
             self._process_includes()
 
-        self._setup_defaults()
+        if not self._top_object._no_defaults:
+            self._setup_defaults()
 
     def _process_includes(self):
         includes = self._fbv.pop('includes')
@@ -322,16 +324,44 @@ class FBVObject(FBVContainer, ABC):
     def _top_dir(self):
         pass
 
+    def __dir__(self):
+        return list(self._fbv.keys()) + list(self.__defaults.keys())
+
     def __iter__(self):
-        return iter(set(chain(self._fbv.keys(), self.__defaults.keys())))
+        return iter(dir(self))
+
+    def _values(self):
+        return [getattr(self, k) for k in self]
+
+    def _items(self):
+        return {k: getattr(self, k) for k in self}
+
+    def _get_value(self, fbv, key):
+        value = super()._get_value(fbv, key)
+
+        try:
+            conversions = self._KEY_CONVERSIONS[key]
+        except KeyError:
+            pass
+        else:
+            if not isinstance(conversions, list):
+                conversions = [conversions]
+            for conversion in conversions:
+                value = conversion(fbv, key, value)
+
+        return value
+
+    def _getattr(self, name, from_fbv=True, from_defaults=True):
+        if from_fbv and name in self._fbv:
+            return self._get_value(self._fbv[name], name)
+        if from_defaults and name in self.__defaults:
+            return self._get_value(self.__defaults[name], name)
+        raise AttributeError(name)
 
     def __getattribute__(self, name):
-        if name.startswith('_'):
-            return super().__getattribute__(name)
-        if name in self._fbv:
-            return self._get_value(self._fbv[name], name)
-        if name in self.__defaults:
-            return self._get_value(self.__defaults[name], name)
+        if not name.startswith('_'):
+            with suppress(AttributeError):
+                return self._getattr(name)
         return super().__getattribute__(name)
 
     def __setattr__(self, name, value):
@@ -364,17 +394,17 @@ class FBVFallbackObject(FBVObject, ABC):
     def _fallback_list(self):
         pass
 
-    def __iter__(self):
-        return iter(set(chain(super().__iter__(), chain.from_iterable(map(iter, self._fallback_list)))))
+    def __dir__(self):
+        return super().__dir__() + list(chain.from_iterable(map(iter, self._fallback_list)))
 
     def __getattribute__(self, name):
-        try:
-            return super().__getattribute__(name)
-        except AttributeError:
+        if not name.startswith('_'):
+            with suppress(AttributeError):
+                return self._getattr(name, from_defaults=False)
             for fallback in self._fallback_list:
                 with suppress(AttributeError):
-                    return getattr(fallback, name)
-            raise
+                    return fallback._getattr(name, from_defaults=False)
+        return super().__getattribute__(name)
 
 
 class FBVList(FBVContainer, Sequence):
@@ -454,11 +484,16 @@ class NamedDazlObject(DazlObject, FBVNamedObject):
 
 
 class TopDazlObject(FBVObject):
-    def __init__(self, path, *args, resolve_paths=False, **kwargs):
+    def __init__(self, path, *args, no_defaults=False, resolve_paths=False, **kwargs):
         path = Path(path).resolve(strict=True)
+        self.__no_defaults = no_defaults
         self.__resolve_paths = resolve_paths
         self.__top_dir = path.parent
         super().__init__(FileBackedDict(tomllib.loads(path.read_text()), path))
+
+    @property
+    def _no_defaults(self):
+        return self.__no_defaults
 
     @property
     def _resolve_paths(self):
@@ -471,3 +506,22 @@ class TopDazlObject(FBVObject):
     @property
     def _top_dir(self):
         return self.__top_dir
+
+
+class Conversions:
+    @classmethod
+    def dashes_to_underscores(cls, fbv, key, value):
+        return value.replace('-', '_')
+
+    @classmethod
+    def resolve_path(cls, fbv, key, value):
+        pass
+
+    def _check_not_absolute_path(self, path):
+        if Path(path).is_absolute():
+            raise ValueError(f"File path cannot be absolute: '{path}'")
+
+    def _resolve_relative_glob_paths(self, path, root_dir):
+        self._check_not_absolute_path(path)
+        for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
+            yield root_dir / globbed_subpath

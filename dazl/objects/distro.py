@@ -1,4 +1,5 @@
 
+from . import Conversions
 from . import DazlObject
 from . import NamedDazlObject
 from .distro_version import NamedDistroVersion
@@ -12,6 +13,9 @@ class Distro(DazlObject):
         'dist_git_base_uri': '',
         'lookaside_base_uri': '',
         'repos': []
+    }
+    _KEY_CONVERSIONS = {
+        'default_version': Conversions.dashes_to_underscores,
     }
 
 

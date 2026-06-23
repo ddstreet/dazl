@@ -17,7 +17,7 @@ class Project(DazlObject):
         'default_distro': DefaultDistro,
     }
 
-    def get_default_distro(self):
+    def get_default_distro_version(self):
         name = self.default_distro.name
         if not name:
             raise NoConfig('Project has no default distro')
@@ -27,11 +27,15 @@ class Project(DazlObject):
         except AttributeError:
             raise ConfigError(f"No configuration found for distro name '{name}'")
 
-        version = self.default_distro.version
+        try:
+            version = self.default_distro.version
+        except AttributeError:
+            version = None
+
         if not version:
             version = distro.default_version
 
         try:
-            return getattr(distro, version)
+            return getattr(distro.versions, version)
         except AttributeError:
             raise ConfigError(f"No configuration found for distro name '{name}' version '{version}'")
