@@ -292,14 +292,14 @@ class FBVObject(FBVContainer, ABC):
         for path in self._resolve_relative_glob_paths(include, path_dir):
             self._fbv.merge(tomllib.loads(path.read_text()), path)
 
-    def _check_not_absolute_path(self, path):
+    def _resolve_relative_glob_paths(self, path, root_dir):
         if Path(path).is_absolute():
             raise ValueError(f"File path cannot be absolute: '{path}'")
-
-    def _resolve_relative_glob_paths(self, path, root_dir):
-        self._check_not_absolute_path(path)
-        for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
-            yield root_dir / globbed_subpath
+        for p in sorted(glob(path, root_dir=root_dir)):
+            newpath = root_dir.joinpath(p).resolve(strict=True)
+            if not newpath.is_relative_to(self._top_dir):
+                raise ValueError(f"File path '{newpath}' is above top dir '{self._top_dir}'")
+            yield newpath
 
     def _setup_defaults(self):
         for k, cls in self._KEY_CLASSMAP.items():
@@ -515,13 +515,6 @@ class Conversions:
 
     @classmethod
     def resolve_path(cls, fbv, key, value):
-        pass
-
-    def _check_not_absolute_path(self, path):
-        if Path(path).is_absolute():
-            raise ValueError(f"File path cannot be absolute: '{path}'")
-
-    def _resolve_relative_glob_paths(self, path, root_dir):
-        self._check_not_absolute_path(path)
-        for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
-            yield root_dir / globbed_subpath
+        if Path(value).is_absolute():
+            raise ValueError(f"File path cannot be absolute: '{value}'")
+        return fbv.path_dir.joinpath(value).resolve(strict=True)
