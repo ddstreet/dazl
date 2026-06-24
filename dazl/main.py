@@ -47,7 +47,8 @@ class Main:
                             resolve_paths=self.opts.resolve_paths)
 
         if not self.opts.component:
-            print(top_obj)
+            #print(top_obj)
+            pass
         else:
             components = {c: getattr(top_obj.components, c)._json for c in self.opts.component}
             print(json.dumps(components, indent=2))

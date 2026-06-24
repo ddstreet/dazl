@@ -164,11 +164,6 @@ class FBVContainer(ABC):
         pass
 
     @classmethod
-    @abstractmethod
-    def _get_default_value(cls):
-        pass
-
-    @classmethod
     def _try_json(cls, value):
         try:
             return value._json
@@ -249,10 +244,6 @@ class FBVObject(FBVContainer, ABC):
     def _required_fbv_class(cls):
         return FileBackedDict
 
-    @classmethod
-    def _get_default_value(cls):
-        return {}
-
     def __init__(self, *args, **kwargs):
         self.__defaults = {}
         super().__init__(*args, **kwargs)
@@ -274,33 +265,14 @@ class FBVObject(FBVContainer, ABC):
         return {k: self._try_json(getattr(self, k)) for k in self}
 
     def _process(self):
-        while 'includes' in self._fbv:
-            self._process_includes()
+        while 'includes' in self:
+            for path in self._get_value(self._fbv.pop('includes'), 'includes'):
+                self._fbv.merge(tomllib.loads(path.read_text()), path)
 
         if not self._top_object._no_defaults:
             self._setup_defaults()
 
-    def _process_includes(self):
-        includes = self._fbv.pop('includes')
-        if isinstance(includes.value, str):
-            self._process_include(includes.value, includes.path_dir)
-        else:
-            for include in includes:
-                self._process_include(include.value, include.path_dir)
-
-    def _process_include(self, include, path_dir):
-        for path in self._resolve_relative_glob_paths(include, path_dir):
-            self._fbv.merge(tomllib.loads(path.read_text()), path)
-
     def _setup_defaults(self):
-        for k, cls in self._KEY_CLASSMAP.items():
-            if k not in self._fbv:
-                try:
-                    value = self._KEY_DEFAULTS[k]
-                except KeyError:
-                    value = cls._get_default_value()
-                self.__defaults[k] = FileBackedValue._FBV(value, self._fbv.path)
-
         for k, default in self._KEY_DEFAULTS.items():
             if k not in self._fbv:
                 self.__defaults[k] = FileBackedValue._FBV(default, self._fbv.path)
@@ -328,17 +300,21 @@ class FBVObject(FBVContainer, ABC):
         return {k: getattr(self, k) for k in self}
 
     def _get_value(self, fbv, key):
+        # FIXME - rework _get_value to actually provide fbv.value, add different methds for use by __getattribute__() to provide simple value or FBVList/FBVDict
         value = super()._get_value(fbv, key)
 
+        # FIXME - change class vars into methods so we can include common fields like includes
+        key_conversions = dict(includes=[Conversions.to_list, Conversions.resolve_glob_paths],
+                               **self._KEY_CONVERSIONS)
         try:
-            conversions = self._KEY_CONVERSIONS[key]
+            conversions = key_conversions[key]
         except KeyError:
             pass
         else:
             if not isinstance(conversions, list):
                 conversions = [conversions]
             for conversion in conversions:
-                value = conversion(fbv, key, value)
+                value = conversion(key, value, fbv)
 
         return value
 
@@ -402,10 +378,6 @@ class FBVList(FBVContainer, Sequence):
     @classmethod
     def _required_fbv_class(cls):
         return FileBackedList
-
-    @classmethod
-    def _get_default_value(cls):
-        return []
 
     @property
     def _json(self):
@@ -501,18 +473,47 @@ class TopDazlObject(FBVObject):
 
 class Conversions:
     @classmethod
-    def dashes_to_underscores(cls, fbv, key, value):
+    def to_list(cls, key, value, fbv):
+        """If value is a string, return a list containing the string;
+        if value is a list, return the value unchanged; if value is a
+        FBVList, return a list of the FBVList's entries.
+        """
+        # FIXME - rework to only have simple values passed in, not FBVList
+        if isinstance(value, FBVList):
+            return value._fbv.value
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            return value
+        raise TypeError(f"Conversions.to_list requires value to be type str, list, or FBVList, got '{type(value).__name__}'")
+
+    @classmethod
+    def dashes_to_underscores(cls, key, value, fbv):
+        """Return a string with all dashes in the value converted to
+        underscores.
+        """
+        assert isinstance(value, str)
         return value.replace('-', '_')
 
     @classmethod
-    def resolve_path(cls, fbv, key, value):
-        pass
+    def resolve_glob_paths(cls, key, value, fbv):
+        """Return a list of absolute Paths resulting from applying
+        globbing to the value, which must be a single (or list of)
+        globbed string path(s) relative to the directory containing
+        the fbv, and then resolving each Path.
+        """
+        if isinstance(value, str):
+            value = [value]
+        assert isinstance(value, list)
+        return list(chain.from_iterable((cls._resolve_glob_path(path, fbv) for path in value)))
 
-    def _check_not_absolute_path(self, path):
+    @classmethod
+    def _resolve_glob_path(cls, path, fbv):
+        cls._check_not_absolute_path(path)
+        for globbed_path in sorted(glob(path, root_dir=fbv.path_dir)):
+            yield fbv.path_dir.joinpath(globbed_path).resolve(strict=True)
+
+    @classmethod
+    def _check_not_absolute_path(cls, path):
         if Path(path).is_absolute():
-            raise ValueError(f"File path cannot be absolute: '{path}'")
-
-    def _resolve_relative_glob_paths(self, path, root_dir):
-        self._check_not_absolute_path(path)
-        for globbed_subpath in sorted(glob(path, root_dir=root_dir)):
-            yield root_dir / globbed_subpath
+            raise ValueError(f"Path cannot be absolute: '{path}'")
