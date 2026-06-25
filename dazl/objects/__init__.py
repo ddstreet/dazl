@@ -315,6 +315,7 @@ class FBVObject(FBVContainer, ABC):
 
     @property
     def _iter_keys(self):
+        return list(self._fbv.keys()) + list(self.__defaults.keys())
 
     def __iter__(self):
         return (k for k in self._iter_keys if k not in self._KEY_IGNORES)
@@ -384,7 +385,7 @@ class FBVFallbackObject(FBVObject, ABC):
 
     @property
     def _iter_keys(self):
-        return super().__dir__() + list(chain.from_iterable(map(iter, self._fallback_list)))
+        return super().__iter_keys + list(chain.from_iterable(map(iter, self._fallback_list)))
 
     def _getattr(self, name):
         if self._config.no_fallback:
