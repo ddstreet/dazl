@@ -166,14 +166,13 @@ class FBVContainer(ABC):
 
     @classmethod
     def _try_json(cls, value):
-        if hasattr(value, '_json'):
+        if isinstance(value, FBVContainer):
             return value._json
         return value
 
     def __init__(self, fbv, *args, **kwargs):
         required_fbv_class = self._required_fbv_class()
         assert isinstance(fbv, required_fbv_class), f"{self.__class__.__name__} value must be instance of {required_fbv_class.__name__}, got '{type(fbv).__name__}'"
-        self.__fbv_containers = {}
         self.__fbv = fbv
         super().__init__()
         self._process()
@@ -202,6 +201,10 @@ class FBVContainer(ABC):
 
     def _check(self):
         pass
+
+    @cached_property
+    def __fbv_containers(self):
+        return {}
 
     def _get_value(self, fbv, key):
         fbvid = id(fbv)
@@ -242,9 +245,9 @@ class FBVObject(FBVContainer, ABC):
     def _get_default_value(cls):
         return {}
 
-    def __init__(self, *args, **kwargs):
-        self.__defaults = {}
-        super().__init__(*args, **kwargs)
+    @cached_property
+    def _defaults(self):
+        return {}
 
     def _get_object_class(self, fbv, key):
         try:
@@ -297,11 +300,11 @@ class FBVObject(FBVContainer, ABC):
                     value = self._KEY_DEFAULTS[k]
                 except KeyError:
                     value = cls._get_default_value()
-                self.__defaults[k] = FileBackedValue._FBV(value, self._fbv.path)
+                self._defaults[k] = FileBackedValue._FBV(value, self._fbv.path)
 
         for k, default in self._KEY_DEFAULTS.items():
             if k not in self._fbv:
-                self.__defaults[k] = FileBackedValue._FBV(default, self._fbv.path)
+                self._defaults[k] = FileBackedValue._FBV(default, self._fbv.path)
 
     @property
     @abstractmethod
@@ -317,7 +320,7 @@ class FBVObject(FBVContainer, ABC):
     def _iter_keys(self):
         for k in self._fbv.keys():
             yield k
-        for k in self.__defaults.keys():
+        for k in self._defaults.keys():
             yield k
 
     def __iter__(self):
@@ -349,7 +352,7 @@ class FBVObject(FBVContainer, ABC):
             with suppress(KeyError):
                 return self._get_value(self._fbv[name], name)
             with suppress(KeyError):
-                return self._get_value(self.__defaults[name], name)
+                return self._get_value(self._defaults[name], name)
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
@@ -394,7 +397,7 @@ class FBVFallbackObject(FBVObject, ABC):
             for fallback in self._fallback_list:
                 for k in fallback._fbv.keys():
                     yield k
-        for k in self.__defaults.keys():
+        for k in self._defaults.keys():
             yield k
 
     def _getattr(self, name):
@@ -406,7 +409,7 @@ class FBVFallbackObject(FBVObject, ABC):
             with suppress(KeyError):
                 return fallback._get_value(fallback._fbv[name], name)
         with suppress(KeyError):
-            return self._get_value(self.__defaults[name], name)
+            return self._get_value(self._defaults[name], name)
         raise AttributeError(name)
 
 
