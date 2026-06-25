@@ -7,7 +7,7 @@ from .distro_version import NamedDistroVersion
 
 class Distro(DazlObject):
     _KEY_CLASSMAP = {
-        'versions': NamedDistroVersion._get_named_object_list_class(),
+        'versions': NamedDistroVersion._get_named_object_collection_class(),
     }
     _KEY_DEFAULTS = {
         'dist_git_base_uri': '',

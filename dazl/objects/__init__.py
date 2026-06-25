@@ -12,7 +12,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from functools import cache
 from functools import cached_property
-from functools import partial
 from functools import singledispatchmethod
 from glob import glob
 from itertools import chain
@@ -23,15 +22,12 @@ from types import SimpleNamespace
 class FileBackedValue(ABC):
     @classmethod
     def _check_FBV(cls, value):
-        if not isinstance(value, FileBackedValue):
-            raise ValueError(f"Expected FileBackedValue type, got '{type(value).__name__}'")
+        assert isinstance(value, FileBackedValue), f"Expected FileBackedValue type, got '{type(value).__name__}'"
 
     @classmethod
     def _FBV(cls, value, path):
-        if isinstance(value, FileBackedValue):
-            assert False # remove me!
-            return value
-        elif isinstance(value, dict):
+        assert not isinstance(value, FileBackedValue)
+        if isinstance(value, dict):
             return FileBackedDict(value, path)
         elif isinstance(value, list):
             return FileBackedList(value, path)
@@ -170,18 +166,16 @@ class FBVContainer(ABC):
 
     @classmethod
     def _try_json(cls, value):
-        try:
+        if hasattr(value, '_json'):
             return value._json
-        except AttributeError:
-            return value
+        return value
 
     def __init__(self, fbv, *args, **kwargs):
         required_fbv_class = self._required_fbv_class()
-        if not isinstance(fbv, required_fbv_class):
-            raise TypeError(f"{self.__class__.__name__} value must be instance of {required_fbv_class.__name__}, got '{type(fbv).__name__}'")
+        assert isinstance(fbv, required_fbv_class), f"{self.__class__.__name__} value must be instance of {required_fbv_class.__name__}, got '{type(fbv).__name__}'"
         self.__fbv_containers = {}
         self.__fbv = fbv
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self._process()
         self._check()
 
@@ -209,27 +203,17 @@ class FBVContainer(ABC):
     def _check(self):
         pass
 
-    @singledispatchmethod
     def _get_value(self, fbv, key):
-        raise TypeError(f"{self.__name__} value must be instance of FileBackedValue, got '{type(fbv).__name__}'")
-
-    @_get_value.register
-    def _(self, fbv: FileBackedValue, key):
-        return fbv.value
-
-    @_get_value.register
-    def _(self, fbd: FileBackedDict, key):
-        return self._get_fbv_container(fbd, key, self._get_object_class)
-
-    @_get_value.register
-    def _(self, fbl: FileBackedList, key):
-        return self._get_fbv_container(fbl, key, self._get_list_class)
-
-    def _get_fbv_container(self, fbv, key, get_class):
         fbvid = id(fbv)
         if fbvid not in self.__fbv_containers:
-            cls = get_class(fbv, key)
-            self.__fbv_containers[fbvid] = cls(fbv, parent=self)
+            if isinstance(fbv, FileBackedDict):
+                self.__fbv_containers[fbvid] = self._get_object_class(fbv, key)(fbv, parent=self, name=key)
+            elif isinstance(fbv, FileBackedList):
+                self.__fbv_containers[fbvid] = self._get_list_class(fbv, key)(fbv, parent=self, name=key)
+            elif isinstance(fbv, FileBackedValue):
+                return fbv.value
+            else:
+                raise TypeError(f"{self.__name__} value must be instance of FileBackedValue, got '{type(fbv).__name__}'")
         return self.__fbv_containers[fbvid]
 
 
@@ -237,13 +221,18 @@ class FBVObject(FBVContainer, ABC):
     _KEY_CLASSMAP = {}
     _KEY_DEFAULTS = {}
     _KEY_CONVERSIONS = {}
+    _KEY_IGNORES = []
 
     @classmethod
     def _get_object_list_class(cls):
         """Return class that accepts a list and uses this class for
         all list values, e.g. [cls(), cls(), ...].
         """
-        return partial(DazlObjectList, child_class=cls)
+        class DazlObjectCollection(DazlList):
+            @classmethod
+            def _get_obejct_class(innercls, fbv, key):
+                return cls
+        return DazlObjectCollection
 
     @classmethod
     def _required_fbv_class(cls):
@@ -277,7 +266,7 @@ class FBVObject(FBVContainer, ABC):
         while 'includes' in self._fbv:
             self._process_includes()
 
-        if not self._top_object._no_defaults:
+        if not self._config.no_defaults:
             self._setup_defaults()
 
     def _process_includes(self):
@@ -351,18 +340,13 @@ class FBVObject(FBVContainer, ABC):
 
         return value
 
-    def _getattr(self, name, from_fbv=True, from_defaults=True):
-        if from_fbv and name in self._fbv:
-            return self._get_value(self._fbv[name], name)
-        if from_defaults and name in self.__defaults:
-            return self._get_value(self.__defaults[name], name)
-        raise AttributeError(name)
-
-    def __getattribute__(self, name):
+    def __getattr__(self, name):
         if not name.startswith('_'):
-            with suppress(AttributeError):
-                return self._getattr(name)
-        return super().__getattribute__(name)
+            with suppress(KeyError):
+                return self._get_value(self._fbv[name], name)
+            with suppress(KeyError):
+                return self._get_value(self.__defaults[name], name)
+        raise AttributeError(name)
 
     def __setattr__(self, name, value):
         if not name.startswith('_'):
@@ -372,12 +356,16 @@ class FBVObject(FBVContainer, ABC):
 
 class FBVNamedObject(FBVObject):
     @classmethod
-    def _get_named_object_list_class(cls):
+    def _get_named_object_collection_class(cls):
         """Return class that accepts a dict and uses this class for
         all dict values and provides the corresponding key name as the
         name of each value, e.g. {name1: cls(), name2: cls(), ...}.
         """
-        return partial(DazlNamedObjectCollection, child_class=cls)
+        class DazlNamedObjectCollection(DazlObject):
+            @classmethod
+            def _get_object_class(innercls, fbv, key):
+                return cls
+        return DazlNamedObjectCollection
 
     def __init__(self, *args, name, **kwargs):
         self.__name = name
@@ -430,6 +418,7 @@ class FBVList(FBVContainer, Sequence):
 class FBVChild:
     def __init__(self, *args, parent, **kwargs):
         self.__parent = parent
+        self.__top_object = self.__parent._top_object
         super().__init__(*args, **kwargs)
 
     @property
@@ -438,29 +427,15 @@ class FBVChild:
 
     @property
     def _top_object(self):
-        return self._parent._top_object
+        return self.__top_object
 
     @property
     def _top_dir(self):
-        return self._parent._top_dir
+        return self.__top_object._top_dir
 
-
-class FBVObjectCollection(FBVContainer):
-    def __init__(self, *args, child_class, **kwargs):
-        self.__child_class = child_class
-        super().__init__(*args, **kwargs)
-
-    def _get_object_class(self, fbv, key):
-        return self.__child_class
-
-
-class FBVNamedObjectCollection(FBVObjectCollection):
-    def __init__(self, *args, child_class, **kwargs):
-        assert issubclass(child_class, FBVNamedObject)
-        super().__init__(*args, child_class=child_class, **kwargs)
-
-    def _get_object_class(self, fbv, key):
-        return partial(super()._get_object_class(fbv, key), name=key)
+    @property
+    def _config(self):
+        return self.__top_object._config
 
 
 class DazlObject(FBVChild, FBVObject):
@@ -471,33 +446,16 @@ class DazlList(FBVChild, FBVList):
     pass
 
 
-class DazlObjectCollection(FBVObjectCollection, DazlList):
-    pass
-
-
-class DazlNamedObjectCollection(FBVNamedObjectCollection, DazlObject):
-    pass
-
-
 class NamedDazlObject(DazlObject, FBVNamedObject):
     pass
 
 
 class TopDazlObject(FBVObject):
-    def __init__(self, path, *args, no_defaults=False, resolve_paths=False, **kwargs):
+    def __init__(self, path, *args, **kwargs):
         path = Path(path).resolve(strict=True)
-        self.__no_defaults = no_defaults
-        self.__resolve_paths = resolve_paths
+        self.__config = Config(**kwargs)
         self.__top_dir = path.parent
         super().__init__(FileBackedDict(tomllib.loads(path.read_text()), path))
-
-    @property
-    def _no_defaults(self):
-        return self.__no_defaults
-
-    @property
-    def _resolve_paths(self):
-        return self.__resolve_paths
 
     @property
     def _top_object(self):
@@ -506,6 +464,17 @@ class TopDazlObject(FBVObject):
     @property
     def _top_dir(self):
         return self.__top_dir
+
+    @property
+    def _config(self):
+        return self.__config
+
+
+@dataclass
+class Config:
+    no_defaults: bool = False
+    no_fallback: bool = False
+    resolve_paths: bool = False
 
 
 class Conversions:

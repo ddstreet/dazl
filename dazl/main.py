@@ -19,6 +19,9 @@ class Main:
         parser.add_argument('--no-defaults',
                             action='store_true',
                             help='Do not include default values')
+        parser.add_argument('--no-fallback',
+                            action='store_true',
+                            help='Do not include fallback values')
         parser.add_argument('-r', '--resolve-paths',
                             action='store_true',
                             help='Resolve all paths to absolute paths')
@@ -44,6 +47,7 @@ class Main:
 
         top_obj = TopObject(self.root_toml_file,
                             no_defaults=self.opts.no_defaults,
+                            no_fallback=self.opts.no_fallback,
                             resolve_paths=self.opts.resolve_paths)
 
         if not self.opts.component:

@@ -20,6 +20,9 @@ class Component(DazlObject):
     _KEY_DEFAULTS = {
         'release': {'calculation': 'auto'},
     }
+    _KEY_IGNORES = [
+        'publish',
+    ]
 
 
 class NamedComponent(Component, NamedDazlObject):
