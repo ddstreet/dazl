@@ -313,11 +313,11 @@ class FBVObject(FBVContainer, ABC):
     def _top_dir(self):
         pass
 
-    def __dir__(self):
-        return list(self._fbv.keys()) + list(self.__defaults.keys())
+    @property
+    def _iter_keys(self):
 
     def __iter__(self):
-        return iter(dir(self))
+        return (k for k in self._iter_keys if k not in self._KEY_IGNORES)
 
     def _values(self):
         return [getattr(self, k) for k in self]
@@ -382,17 +382,21 @@ class FBVFallbackObject(FBVObject, ABC):
     def _fallback_list(self):
         pass
 
-    def __dir__(self):
+    @property
+    def _iter_keys(self):
         return super().__dir__() + list(chain.from_iterable(map(iter, self._fallback_list)))
 
-    def __getattribute__(self, name):
-        if not name.startswith('_'):
-            with suppress(AttributeError):
-                return self._getattr(name, from_defaults=False)
-            for fallback in self._fallback_list:
-                with suppress(AttributeError):
-                    return fallback._getattr(name, from_defaults=False)
-        return super().__getattribute__(name)
+    def _getattr(self, name):
+        if self._config.no_fallback:
+            return super()._getattr(name)
+        with suppress(KeyError):
+            return self._get_value(self._fbv[name], name)
+        for fallback in self._fallback_list:
+            with suppress(KeyError):
+                return fallback._get_value(fallback._fbv[name], name)
+        with suppress(KeyError):
+            return self._get_value(self.__defaults[name], name)
+        raise AttributeError(name)
 
 
 class FBVList(FBVContainer, Sequence):
