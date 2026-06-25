@@ -6,3 +6,7 @@ class NoConfig(Exception):
 
 class ConfigError(Exception):
     pass
+
+
+class GitError(Exception):
+    pass

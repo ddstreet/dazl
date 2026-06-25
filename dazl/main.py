@@ -6,6 +6,7 @@ import sys
 from functools import cached_property
 from pathlib import Path
 
+from .git import Git
 from .objects.top import TopObject
 
 
@@ -31,14 +32,13 @@ class Main:
                             help='Show only specified component(s)')
         parser.add_argument('root_toml_file',
                             nargs='?',
-                            default=DEFAULT_ROOT_TOML_FILE,
                             help='Path to the root TOML file')
 
         return parser.parse_args(sys.argv[1:])
 
     @cached_property
     def root_toml_file(self):
-        return Path(self.opts.root_toml_file)
+        return Path(self.opts.root_toml_file or f'{Git.toplevel()}/azldev.toml')
 
     def run(self):
         if not self.root_toml_file.exists():
