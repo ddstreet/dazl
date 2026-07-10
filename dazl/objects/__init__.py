@@ -1,4 +1,5 @@
 
+import dataclasses
 import inspect
 import json
 import tomllib
@@ -8,8 +9,8 @@ from abc import abstractmethod
 from collections.abc import MutableMapping
 from collections.abc import MutableSequence
 from collections.abc import Sequence
+from contextlib import contextmanager
 from contextlib import suppress
-from dataclasses import dataclass
 from functools import cache
 from functools import cached_property
 from functools import singledispatchmethod
@@ -17,6 +18,10 @@ from glob import glob
 from itertools import chain
 from pathlib import Path
 from types import SimpleNamespace
+
+from .. import DEFAULT_ROOT_TOML_FILE
+from ..exception import GitError
+from ..git import Git
 
 
 class FileBackedValue(ABC):
@@ -318,9 +323,25 @@ class FBVObject(FBVContainer, ABC):
 
     @property
     def _iter_keys(self):
-        for k in chain(self._fbv.keys(), self._defaults.keys()):
-            if k not in self._KEY_IGNORES:
-                yield k
+        return chain(self._iter_property_keys,
+                     self._iter_fbv_keys,
+                     self._iter_default_keys)
+
+    def _filter_key(self, key):
+        return not key.startswith('_') and key not in self._KEY_IGNORES
+
+    @cached_property
+    def _iter_property_keys(self):
+        return [key for key, field in inspect.getmembers(type(self))
+                if self._filter_key(key) and isinstance(field, property)]
+
+    @property
+    def _iter_fbv_keys(self):
+        return filter(self._filter_key, self._fbv.keys())
+
+    @property
+    def _iter_default_keys(self):
+        return filter(self._filter_key, self._defaults.keys())
 
     def __iter__(self):
         return iter(dict.fromkeys(self._iter_keys))
@@ -329,7 +350,7 @@ class FBVObject(FBVContainer, ABC):
         return [getattr(self, k) for k in self]
 
     def _items(self):
-        return {k: getattr(self, k) for k in self}
+        return {k: getattr(self, k) for k in self}.items()
 
     def _get_value(self, fbv, key):
         value = super()._get_value(fbv, key)
@@ -352,6 +373,7 @@ class FBVObject(FBVContainer, ABC):
                 return self._get_value(self._fbv[name], name)
             with suppress(KeyError):
                 return self._get_value(self._defaults[name], name)
+        print(f'object {type(self).__name__} failed to get attr {name}')
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
@@ -390,18 +412,17 @@ class FBVFallbackObject(FBVObject, ABC):
 
     @property
     def _iter_keys(self):
-        for k in self._fbv.keys():
-            if k not in self._KEY_IGNORES:
-                yield k
-        if not self._config.no_fallback:
+        return chain(self._iter_property_keys,
+                     self._iter_fbv_keys,
+                     self._iter_fallback_keys,
+                     self._iter_default_keys)
+
+    @property
+    def _iter_fallback_keys(self):
+        if self._config.no_fallback:
             for fallback in self._fallback_list:
                 assert isinstance(fallback, FBVObject)
-                for k in fallback._fbv.keys():
-                    if k not in self._KEY_IGNORES:
-                        yield k
-        for k in self._defaults.keys():
-            if k not in self._KEY_IGNORES:
-                yield k
+                yield from chain(fallback._iter_property_keys, fallback._iter_fbv_keys)
 
     def __getattr__(self, name):
         if self._config.no_fallback:
@@ -473,11 +494,43 @@ class NamedDazlObject(DazlObject, FBVNamedObject):
 
 
 class TopDazlObject(FBVObject):
-    def __init__(self, path, *args, **kwargs):
-        path = Path(path).resolve(strict=True)
+    @classmethod
+    def _local_root_toml_file(cls, root_toml_file=None):
+        if root_toml_file:
+            return Path(root_toml_file)
+        else:
+            try:
+                return Git().topleveldir / DEFAULT_ROOT_TOML_FILE
+            except GitError:
+                raise FileNotFoundError(f"Default TOML file '{DEFAULT_ROOT_TOML_FILE}' not found")
+
+    @classmethod
+    @contextmanager
+    def _root_toml_file(cls, root_toml_file=None, commit=None):
+        toml_file = cls._local_root_toml_file(root_toml_file=root_toml_file)
+
+        if commit:
+            with Git(toml_file).clone_at_commit(commit) as cloned_toml_file:
+                yield cloned_toml_file
+        else:
+            yield toml_file
+
+    @classmethod
+    @contextmanager
+    def _get_top_object(cls, root_toml_file=None, commit=None, **kwargs):
+        with cls._root_toml_file(root_toml_file=root_toml_file, commit=commit) as toml_file:
+            yield cls(toml_file, **kwargs)
+
+    def __init__(self, root_toml_file, *args, **kwargs):
+        self.__path = Path(root_toml_file).resolve(strict=True)
         self.__config = Config(**kwargs)
-        self.__top_dir = path.parent
-        super().__init__(FileBackedDict(tomllib.loads(path.read_text()), path))
+        self.__top_dir = self.__path.parent
+        super().__init__(FileBackedDict(tomllib.loads(self.__path.read_text()), self.__path))
+
+    @contextmanager
+    def _get_top_object_from_commit(self, commit):
+        with self._get_top_object(root_toml_file=self.__path, commit=commit, **dataclasses.asdict(self._config)) as top_object:
+            yield top_object
 
     @property
     def _top_object(self):
@@ -492,7 +545,7 @@ class TopDazlObject(FBVObject):
         return self.__config
 
 
-@dataclass
+@dataclasses.dataclass
 class Config:
     no_defaults: bool = False
     no_fallback: bool = False

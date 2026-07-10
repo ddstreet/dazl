@@ -17,6 +17,13 @@ class Project(DazlObject):
         'default_distro': DefaultDistro,
     }
 
+    @property
+    def dist_git_dir(self):
+        try:
+            return super().dist_git_dir
+        except AttributeError:
+            return self.rendered_specs_dir
+
     def get_default_distro_version(self):
         name = self.default_distro.name
         if not name:

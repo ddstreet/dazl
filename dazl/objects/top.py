@@ -1,4 +1,6 @@
 
+from contextlib import contextmanager
+
 from . import TopDazlObject
 from .component import NamedComponentWithFallback
 from .component_group import NamedComponentGroup

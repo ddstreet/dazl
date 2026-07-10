@@ -26,7 +26,17 @@ class Component(DazlObject):
 
 
 class NamedComponent(Component, NamedDazlObject):
-    pass
+    def do_release(self, dest=None):
+        if not dest:
+            dest = self._top_object.project.dist_git_dir / self._name[0].lower() / self._name
+
+        # get upstream dist-git
+
+        # place upstream dist-git files into dest
+
+        # run overlays (and other transforms)
+
+        # autorelease
 
 
 class NamedComponentWithFallback(FBVFallbackObject, NamedComponent):

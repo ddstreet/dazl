@@ -18,6 +18,30 @@ class Git:
         except subprocess.CalledProcessError as cpe:
             raise GitError(f"Git command 'git {' '.join(cmd)}' failed: {cpe}")
 
+    @classmethod
+    @contextmanager
+    def _clone_from_repo(cls, src, *, is_remote, commit=None):
+        with TemporaryDirectory() as tempdir:
+            destdir = Path(tempdir) / 'dazl_git_clone'
+            cmd = ['clone', '--revision', commit or 'HEAD']
+            if not is_remote:
+                cmd += ['-s']
+            cmd += [str(src), str(destdir)]
+            cls.git_cmd_stdout(cmd)
+            yield destdir
+
+    @classmethod
+    @contextmanager
+    def clone_from_remote(cls, remote, *, commit=None):
+        with cls._clone_from_repo(remote, is_remote=True, commit=commit) as clone:
+            yield clone
+
+    @classmethod
+    @contextmanager
+    def clone_from_local(cls, local, *, commit=None):
+        with cls._clone_from_repo(local, is_remote=False, commit=commit) as clone:
+            yield clone
+
     def __init__(self, source=Path.cwd()):
         self.source = Path(source)
         self.sourcedir = self.source.parent if self.source.is_file() else self.source
@@ -37,9 +61,6 @@ class Git:
         return self.git_cmd_stdout(['rev-parse', '--verify', '--end-of-options', commit], cwd=self.sourcedir)
 
     @contextmanager
-    def clone(self, commit):
-        with TemporaryDirectory() as tempdir:
-            commit_hash = self.get_hash(commit)
-            clonedir = Path(tempdir) / commit_hash
-            self.git_cmd_stdout(['clone', '-s', '--revision', commit_hash, str(self.sourcedir), str(clonedir)])
-            yield clonedir / self.relative_path()
+    def clone_at_commit(self, commit):
+        with self.clone_from_local(self.sourcedir, commit=self.get_hash(commit)) as clone:
+            yield clone / self.relative_path()
