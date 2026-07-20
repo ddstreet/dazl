@@ -1,5 +1,6 @@
 
 from functools import cached_property
+from pathlib import Path
 
 from ..exception import ConfigError
 from ..exception import NoConfig
@@ -14,7 +15,7 @@ from .overlay import Overlay
 class Component(DazlObject):
     _KEY_CLASSMAP = {
         'spec': DistGit,
-        'overlays': Overlay,
+        'overlays': Overlay._get_object_collection_class(),
         'build': Build,
     }
     _KEY_DEFAULTS = {
@@ -24,8 +25,24 @@ class Component(DazlObject):
         'publish',
     ]
 
+    def __eq__(self, other):
+        if not isinstance(other, Component):
+            return False
+
+        return all((self.spec._json == other.spec._json,
+                    self.build._json == other.build._json,
+                    self.release.calculation == other.release.calculation,
+                    self.overlays == other.overlays))
+
 
 class NamedComponent(Component, NamedDazlObject):
+    @property
+    def dist_git_dir(self):
+        return str(Path(self._top_object.project.dist_git_dir) / self._name[0].lower() / self._name)
+
+    def get_last_release_commit(self):
+        return self._top_object._toml_git.get_commit_for_path(self.dist_git_dir)
+
     def do_release(self, dest=None):
         if not dest:
             dest = self._top_object.project.dist_git_dir / self._name[0].lower() / self._name

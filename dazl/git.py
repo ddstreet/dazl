@@ -2,12 +2,17 @@
 import subprocess
 
 from contextlib import contextmanager
+from contextlib import suppress
 from functools import cache
 from functools import cached_property
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .exception import GitError
+from .exception import NotGitRepo
+
+
+CLONED_FROM_KEY = 'dazl.clonedfrom'
 
 
 class Git:
@@ -16,51 +21,77 @@ class Git:
         try:
             return (subprocess.run(['git'] + cmd, cwd=cwd, check=True, text=True, capture_output=True).stdout or '').strip()
         except subprocess.CalledProcessError as cpe:
-            raise GitError(f"Git command 'git {' '.join(cmd)}' failed: {cpe}")
+            raise GitError(f"Git command 'git {' '.join(cmd)}' failed: {cpe.stderr}")
+
+    @classmethod
+    def get_topleveldir_for_path(self, path):
+        path = Path(path)
+        if path.is_file():
+            path = path.parent
+        try:
+            return Path(self.git_cmd_stdout(['rev-parse', '--show-toplevel'], cwd=path))
+        except GitError as ge:
+            raise NotGitRepo(f"Git repo not found at '{path}': {ge}")
+
+    @classmethod
+    def get_repo_cloned_from(cls, repo):
+        with suppress(GitError):
+            return cls.git_cmd_stdout(['config', 'get', '--local', CLONED_FROM_KEY], cwd=repo)
+        return repo
+
+    @classmethod
+    def set_repo_cloned_from(cls, repo, cloned_from):
+        cls.git_cmd_stdout(['config', 'set', '--local', CLONED_FROM_KEY, str(cloned_from)], cwd=repo)
 
     @classmethod
     @contextmanager
-    def _clone_from_repo(cls, src, *, is_remote, commit=None):
+    def get_clonedir_from_repo(cls, src, *, is_remote, commit=None):
+        src = cls.get_repo_cloned_from(src)
+        commit = commit or 'HEAD'
         with TemporaryDirectory() as tempdir:
-            destdir = Path(tempdir) / 'dazl_git_clone'
-            cmd = ['clone', '--revision', commit or 'HEAD']
+            clonedir = Path(tempdir) / f'dazl_git_clone_at_{commit}'
+            cmd = ['clone', '--revision', commit]
             if not is_remote:
                 cmd += ['-s']
-            cmd += [str(src), str(destdir)]
+            cmd += [str(src), str(clonedir)]
             cls.git_cmd_stdout(cmd)
-            yield destdir
+            cls.set_repo_cloned_from(clonedir, src)
+            yield clonedir
 
-    @classmethod
-    @contextmanager
-    def clone_from_remote(cls, remote, *, commit=None):
-        with cls._clone_from_repo(remote, is_remote=True, commit=commit) as clone:
-            yield clone
+    def __init__(self, path=None):
+        self.__topleveldir = self.get_topleveldir_for_path(path or Path.cwd())
 
-    @classmethod
-    @contextmanager
-    def clone_from_local(cls, local, *, commit=None):
-        with cls._clone_from_repo(local, is_remote=False, commit=commit) as clone:
-            yield clone
+    @property
+    def topleveldir(self):
+        return self.__topleveldir
 
-    def __init__(self, source=Path.cwd()):
-        self.source = Path(source)
-        self.sourcedir = self.source.parent if self.source.is_file() else self.source
-        if not self.sourcedir.exists():
-            raise FileNotFoundError(self.sourcedir)
+    def relative_path(self, path, at=None):
+        path = Path(path)
+        if not path.is_absolute():
+            path = (at or self.topleveldir).resolve() / path
+        return path.resolve().relative_to(self.topleveldir)
 
     @cached_property
-    def topleveldir(self):
-        return Path(self.git_cmd_stdout(['rev-parse', '--show-toplevel'], cwd=self.sourcedir))
-
-    def relative_path(self, path=None):
-        path = self.source if path is None else Path(path)
-        return path.relative_to(self.topleveldir)
+    def commit_hash(self):
+        return self.get_hash_for_commit('HEAD')
 
     @cache
-    def get_hash(self, commit):
-        return self.git_cmd_stdout(['rev-parse', '--verify', '--end-of-options', commit], cwd=self.sourcedir)
+    def get_hash_for_commit(self, commit):
+        return self.git_cmd_stdout(['rev-parse', '--verify', '--end-of-options', commit], cwd=self.topleveldir)
+
+    @cache
+    def get_commit_for_path(self, path):
+        return self.git_cmd_stdout(['log', '-1', '--format=%H', str(self.relative_path(path))], cwd=self.topleveldir)
 
     @contextmanager
-    def clone_at_commit(self, commit):
-        with self.clone_from_local(self.sourcedir, commit=self.get_hash(commit)) as clone:
-            yield clone / self.relative_path()
+    def get_clonedir_at_commit(self, commit):
+        with self.get_clonedir_from_repo(self.topleveldir, is_remote=False, commit=self.get_hash_for_commit(commit)) as clonedir:
+            yield clonedir
+
+    @contextmanager
+    def get_clone_at_commit(self, commit):
+        with self.get_clonedir_at_commit(commit) as clonedir:
+            yield self.get_clone_from_clonedir(clonedir)
+
+    def get_clone_from_clonedir(self, clonedir):
+        return self.__class__(clonedir)

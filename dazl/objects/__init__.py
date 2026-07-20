@@ -20,8 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .. import DEFAULT_ROOT_TOML_FILE
-from ..exception import GitError
 from ..git import Git
+from ..exception import NotGitRepo
 
 
 class FileBackedValue(ABC):
@@ -232,13 +232,13 @@ class FBVObject(FBVContainer, ABC):
     _KEY_IGNORES = []
 
     @classmethod
-    def _get_object_list_class(cls):
+    def _get_object_collection_class(cls):
         """Return class that accepts a list and uses this class for
         all list values, e.g. [cls(), cls(), ...].
         """
         class DazlObjectCollection(DazlList):
             @classmethod
-            def _get_obejct_class(innercls, fbv, key):
+            def _get_object_class(innercls, fbv, key):
                 return cls
         return DazlObjectCollection
 
@@ -332,6 +332,9 @@ class FBVObject(FBVContainer, ABC):
 
     @cached_property
     def _iter_property_keys(self):
+        if self._config.no_properties:
+            return []
+
         return [key for key, field in inspect.getmembers(type(self))
                 if self._filter_key(key) and isinstance(field, property)]
 
@@ -373,7 +376,6 @@ class FBVObject(FBVContainer, ABC):
                 return self._get_value(self._fbv[name], name)
             with suppress(KeyError):
                 return self._get_value(self._defaults[name], name)
-        print(f'object {type(self).__name__} failed to get attr {name}')
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
@@ -420,9 +422,13 @@ class FBVFallbackObject(FBVObject, ABC):
     @property
     def _iter_fallback_keys(self):
         if self._config.no_fallback:
-            for fallback in self._fallback_list:
-                assert isinstance(fallback, FBVObject)
-                yield from chain(fallback._iter_property_keys, fallback._iter_fbv_keys)
+            return []
+
+        return chain.from_iterable((self._iter_fallback_entry_keys(fallback) for fallback in self._fallback_list))
+
+    def _iter_fallback_entry_keys(self, fallback):
+        assert isinstance(fallback, FBVObject)
+        return chain(fallback._iter_property_keys, fallback._iter_fbv_keys)
 
     def __getattr__(self, name):
         if self._config.no_fallback:
@@ -457,6 +463,22 @@ class FBVList(FBVContainer, Sequence):
     def __len__(self):
         return len(self._fbv)
 
+    def __eq__(self, other):
+        if not isinstance(other, FBVList):
+            return False
+
+        self_list = list(self)
+        other_list = list(other)
+        while self_list:
+            self_item = self_list.pop(0)
+            try:
+                other_list.remove(self_item)
+            except ValueError:
+                return False
+        if other_list:
+            return False
+        return True
+
 
 class FBVChild:
     def __init__(self, *args, parent, **kwargs):
@@ -481,6 +503,10 @@ class FBVChild:
         return self.__top_object._config
 
 
+class FBVPath:
+    pass
+
+
 class DazlObject(FBVChild, FBVObject):
     pass
 
@@ -494,43 +520,30 @@ class NamedDazlObject(DazlObject, FBVNamedObject):
 
 
 class TopDazlObject(FBVObject):
-    @classmethod
-    def _local_root_toml_file(cls, root_toml_file=None):
-        if root_toml_file:
-            return Path(root_toml_file)
-        else:
-            try:
-                return Git().topleveldir / DEFAULT_ROOT_TOML_FILE
-            except GitError:
-                raise FileNotFoundError(f"Default TOML file '{DEFAULT_ROOT_TOML_FILE}' not found")
+    def __init__(self, root_toml_file=None, *args, **kwargs):
+        try:
+            self.__toml_git = TomlGit(root_toml_file)
+            self.__root_toml_file = self.__toml_git.root_toml_file
+        except NotGitRepo:
+            self.__toml_git = None
+            self.__root_toml_file = Path(root_toml_file or DEFAULT_ROOT_TOML_FILE).resolve()
 
-    @classmethod
-    @contextmanager
-    def _root_toml_file(cls, root_toml_file=None, commit=None):
-        toml_file = cls._local_root_toml_file(root_toml_file=root_toml_file)
+        if not self.__root_toml_file.is_file():
+            raise FileNotFoundError(f"Root TOML file '{self.__root_toml_file}' not found")
 
-        if commit:
-            with Git(toml_file).clone_at_commit(commit) as cloned_toml_file:
-                yield cloned_toml_file
-        else:
-            yield toml_file
-
-    @classmethod
-    @contextmanager
-    def _get_top_object(cls, root_toml_file=None, commit=None, **kwargs):
-        with cls._root_toml_file(root_toml_file=root_toml_file, commit=commit) as toml_file:
-            yield cls(toml_file, **kwargs)
-
-    def __init__(self, root_toml_file, *args, **kwargs):
-        self.__path = Path(root_toml_file).resolve(strict=True)
         self.__config = Config(**kwargs)
-        self.__top_dir = self.__path.parent
-        super().__init__(FileBackedDict(tomllib.loads(self.__path.read_text()), self.__path))
+        super().__init__(FileBackedDict(tomllib.loads(self.__root_toml_file.read_text()), self.__root_toml_file))
 
     @contextmanager
-    def _get_top_object_from_commit(self, commit):
-        with self._get_top_object(root_toml_file=self.__path, commit=commit, **dataclasses.asdict(self._config)) as top_object:
-            yield top_object
+    def _get_top_object_at_commit(self, commit):
+        with self._toml_git.get_clone_at_commit(commit) as clone:
+            yield self.__class__(clone.root_toml_file, **dataclasses.asdict(self._config))
+
+    @property
+    def _toml_git(self):
+        if not self.__toml_git:
+            raise NotGitRepo(f"Root TOML file '{self.__root_toml_file}' is not in a git repo")
+        return self.__toml_git
 
     @property
     def _top_object(self):
@@ -538,18 +551,39 @@ class TopDazlObject(FBVObject):
 
     @property
     def _top_dir(self):
-        return self.__top_dir
+        return self.__root_toml_file.parent
 
     @property
     def _config(self):
         return self.__config
 
 
+class TomlGit(Git):
+    def __init__(self, root_toml_file=None):
+        super().__init__(root_toml_file)
+        if not root_toml_file:
+            root_toml_file = DEFAULT_ROOT_TOML_FILE
+        elif not root_toml_file.is_absolute():
+            root_toml_file = self.relative_path(root_toml_file)
+        self.__root_toml_file = self.topleveldir / root_toml_file
+
+    @property
+    def root_toml_file(self):
+        return self.__root_toml_file
+
+    @property
+    def relative_root_toml_file(self):
+        return self.relative_path(self.root_toml_file)
+
+    def get_clone_from_clonedir(self, clonedir):
+        return super().get_clone_from_clonedir(clonedir / self.relative_root_toml_file)
+
+
 @dataclasses.dataclass
 class Config:
-    no_defaults: bool = False
+    no_properties: bool = False
     no_fallback: bool = False
-    resolve_paths: bool = False
+    no_defaults: bool = False
 
 
 class Conversions:
@@ -561,4 +595,4 @@ class Conversions:
     def resolve_path(cls, fbv, key, value):
         if Path(value).is_absolute():
             raise ValueError(f"File path cannot be absolute: '{value}'")
-        return fbv.path_dir.joinpath(value).resolve(strict=True)
+        return str(fbv.path_dir.joinpath(value).resolve())

@@ -1,6 +1,7 @@
 
 from ..exception import ConfigError
 from ..exception import NoConfig
+from . import Conversions
 from . import DazlObject
 
 
@@ -15,6 +16,10 @@ class DefaultDistro(DazlObject):
 class Project(DazlObject):
     _KEY_CLASSMAP = {
         'default_distro': DefaultDistro,
+    }
+    _KEY_CONVERSIONS = {
+        'dist_git_dir': Conversions.resolve_path,
+        'rendered_specs_dir': Conversions.resolve_path,
     }
 
     @property

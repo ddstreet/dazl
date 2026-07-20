@@ -10,3 +10,7 @@ class ConfigError(Exception):
 
 class GitError(Exception):
     pass
+
+
+class NotGitRepo(GitError):
+    pass
