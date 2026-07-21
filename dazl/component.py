@@ -67,8 +67,8 @@ class Component(SubCommand):
         self._run_show_component_commits(component, self.top_object, until)
 
     def _run_show_component_commits(self, component, top_object, until):
-        previous_commit = top_object._toml_git.get_hash_for_commit('HEAD^')
-        current_commit = top_object._toml_git.commit_hash
+        previous_commit = top_object._git.get_hash_for_commit('HEAD^')
+        current_commit = top_object._git.commit_hash
 
         print(f'checking {previous_commit}..{current_commit} until {until}')
 
@@ -76,7 +76,7 @@ class Component(SubCommand):
             c1 = getattr(previous_top_object.components, component, None)
             c2 = getattr(top_object.components, component)
             if c1 != c2:
-                print(top_object._toml_git.commit_hash)
+                print(top_object._git.commit_hash)
             if not c1 or previous_commit == until:
                 return
             self._run_show_component_commits(component, previous_top_object, until)

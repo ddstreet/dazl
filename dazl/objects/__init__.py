@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 from .. import DEFAULT_ROOT_TOML_FILE
 from ..git import Git
+from ..exception import NoConfig
 from ..exception import NotGitRepo
 
 
@@ -160,6 +161,14 @@ class FileBackedDict(FileBackedValue, MutableMapping):
 
 class FBVContainer(ABC):
     @classmethod
+    def _get_object_class(self, fbv, key):
+        return DazlObject
+
+    @classmethod
+    def _get_list_class(self, fbv, key):
+        return DazlList
+
+    @classmethod
     @abstractmethod
     def _required_fbv_class(cls):
         pass
@@ -182,12 +191,6 @@ class FBVContainer(ABC):
         super().__init__()
         self._process()
         self._check()
-
-    def _get_object_class(self, fbv, key):
-        return DazlObject
-
-    def _get_list_class(self, fbv, key):
-        return DazlList
 
     @property
     @abstractmethod
@@ -250,21 +253,24 @@ class FBVObject(FBVContainer, ABC):
     def _get_default_value(cls):
         return {}
 
-    @cached_property
-    def _defaults(self):
-        return {}
-
-    def _get_object_class(self, fbv, key):
+    @classmethod
+    def _get_object_class(cls, fbv, key):
         try:
-            return self._KEY_CLASSMAP[key]
+            return cls._KEY_CLASSMAP[key]
         except KeyError:
             return super()._get_object_class(fbv, key)
 
-    def _get_list_class(self, fbv, key):
+    @classmethod
+    def _get_list_class(cls, fbv, key):
         try:
-            return self._KEY_CLASSMAP[key]
+            return cls._KEY_CLASSMAP[key]
         except KeyError:
             return super()._get_list_class(fbv, key)
+
+    @cached_property
+    def _defaults(self):
+        return dict(**{k: FileBackedValue._FBV(cls._get_default_value(), self._fbv.path) for k, cls in self._KEY_CLASSMAP.items()},
+                    **{k: FileBackedValue._FBV(default, self._fbv.path) for k, default in self._KEY_DEFAULTS.items()})
 
     @property
     def _json(self):
@@ -273,9 +279,6 @@ class FBVObject(FBVContainer, ABC):
     def _process(self):
         while 'includes' in self._fbv:
             self._process_includes()
-
-        if not self._config.no_defaults:
-            self._setup_defaults()
 
     def _process_includes(self):
         includes = self._fbv.pop('includes')
@@ -298,18 +301,6 @@ class FBVObject(FBVContainer, ABC):
                 raise ValueError(f"File path '{newpath}' is above top dir '{self._top_dir}'")
             yield newpath
 
-    def _setup_defaults(self):
-        for k, cls in self._KEY_CLASSMAP.items():
-            if k not in self._fbv:
-                try:
-                    value = self._KEY_DEFAULTS[k]
-                except KeyError:
-                    value = cls._get_default_value()
-                self._defaults[k] = FileBackedValue._FBV(value, self._fbv.path)
-
-        for k, default in self._KEY_DEFAULTS.items():
-            if k not in self._fbv:
-                self._defaults[k] = FileBackedValue._FBV(default, self._fbv.path)
 
     @property
     @abstractmethod
@@ -344,6 +335,8 @@ class FBVObject(FBVContainer, ABC):
 
     @property
     def _iter_default_keys(self):
+        if self._config.no_defaults:
+            return []
         return filter(self._filter_key, self._defaults.keys())
 
     def __iter__(self):
@@ -395,6 +388,13 @@ class FBVNamedObject(FBVObject):
             @classmethod
             def _get_object_class(innercls, fbv, key):
                 return cls
+
+            def __getattr__(self, name):
+                try:
+                    return super().__getattr__(name)
+                except AttributeError:
+                    raise NoConfig(f"No configuration found for {cls.__name__} '{name}'")
+
         return DazlNamedObjectCollection
 
     def __init__(self, *args, name, **kwargs):
@@ -521,12 +521,7 @@ class NamedDazlObject(DazlObject, FBVNamedObject):
 
 class TopDazlObject(FBVObject):
     def __init__(self, root_toml_file=None, *args, **kwargs):
-        try:
-            self.__toml_git = TomlGit(root_toml_file)
-            self.__root_toml_file = self.__toml_git.root_toml_file
-        except NotGitRepo:
-            self.__toml_git = None
-            self.__root_toml_file = Path(root_toml_file or DEFAULT_ROOT_TOML_FILE).resolve()
+        self.__root_toml_file = Path(root_toml_file or DEFAULT_ROOT_TOML_FILE).resolve()
 
         if not self.__root_toml_file.is_file():
             raise FileNotFoundError(f"Root TOML file '{self.__root_toml_file}' not found")
@@ -534,16 +529,18 @@ class TopDazlObject(FBVObject):
         self.__config = Config(**kwargs)
         super().__init__(FileBackedDict(tomllib.loads(self.__root_toml_file.read_text()), self.__root_toml_file))
 
+    @cached_property
+    def _git(self):
+        try:
+            return Git(self.__root_toml_file)
+        except NotGitRepo:
+            raise NotGitRepo(f"Root TOML file '{self.__root_toml_file}' is not in a git repo")
+
     @contextmanager
     def _get_top_object_at_commit(self, commit):
-        with self._toml_git.get_clone_at_commit(commit) as clone:
-            yield self.__class__(clone.root_toml_file, **dataclasses.asdict(self._config))
-
-    @property
-    def _toml_git(self):
-        if not self.__toml_git:
-            raise NotGitRepo(f"Root TOML file '{self.__root_toml_file}' is not in a git repo")
-        return self.__toml_git
+        with self._git.get_clonedir_at_commit(commit) as clonedir:
+            yield self.__class__(Path(clonedir) / self._git.relative_path(self.__root_toml_file),
+                                 **dataclasses.asdict(self._config))
 
     @property
     def _top_object(self):
@@ -556,27 +553,6 @@ class TopDazlObject(FBVObject):
     @property
     def _config(self):
         return self.__config
-
-
-class TomlGit(Git):
-    def __init__(self, root_toml_file=None):
-        super().__init__(root_toml_file)
-        if not root_toml_file:
-            root_toml_file = DEFAULT_ROOT_TOML_FILE
-        elif not root_toml_file.is_absolute():
-            root_toml_file = self.relative_path(root_toml_file)
-        self.__root_toml_file = self.topleveldir / root_toml_file
-
-    @property
-    def root_toml_file(self):
-        return self.__root_toml_file
-
-    @property
-    def relative_root_toml_file(self):
-        return self.relative_path(self.root_toml_file)
-
-    def get_clone_from_clonedir(self, clonedir):
-        return super().get_clone_from_clonedir(clonedir / self.relative_root_toml_file)
 
 
 @dataclasses.dataclass

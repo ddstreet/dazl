@@ -8,13 +8,13 @@ from . import DazlObject
 from . import FBVFallbackObject
 from . import NamedDazlObject
 from .build import Build
-from .dist_git import DistGit
+from .dist_git import LocalDistGit
+from .dist_git import UpstreamDistGit
 from .overlay import Overlay
 
 
 class Component(DazlObject):
     _KEY_CLASSMAP = {
-        'spec': DistGit,
         'overlays': Overlay._get_object_collection_class(),
         'build': Build,
     }
@@ -24,6 +24,19 @@ class Component(DazlObject):
     _KEY_IGNORES = [
         'publish',
     ]
+
+    @classmethod
+    def _get_object_class(cls, fbv, key):
+        if key != 'spec':
+            return super()._get_object_class(fbv, key)
+
+        spec_type = fbv.get('type').value
+        if spec_type == 'local':
+            return LocalDistGit
+        elif spec_type == 'upstream':
+            return UpstreamDistGit
+        else:
+            raise ConfigError(f"Invalid spec type '{spec_type}'")
 
     def __eq__(self, other):
         if not isinstance(other, Component):
@@ -41,7 +54,7 @@ class NamedComponent(Component, NamedDazlObject):
         return str(Path(self._top_object.project.dist_git_dir) / self._name[0].lower() / self._name)
 
     def get_last_release_commit(self):
-        return self._top_object._toml_git.get_commit_for_path(self.dist_git_dir)
+        return self._top_object._git.get_commit_for_path(self.dist_git_dir)
 
     def do_release(self, dest=None):
         if not dest:

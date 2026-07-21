@@ -1,4 +1,6 @@
 
+from functools import cache
+
 from ..exception import ConfigError
 from ..exception import NoConfig
 from . import Conversions
@@ -29,25 +31,19 @@ class Project(DazlObject):
         except AttributeError:
             return self.rendered_specs_dir
 
+    @cache
+    def get_default_distro(self):
+        try:
+            return getattr(self._top_object.distros, self.default_distro.name)
+        except AttributeError:
+            raise ConfigError(f"No configuration found for distro name '{self.default_distro.name}'")
+
+    @cache
     def get_default_distro_version(self):
-        name = self.default_distro.name
-        if not name:
-            raise NoConfig('Project has no default distro')
+        # remove once default version is moved into project
+        version = self.default_distro.version or self.get_default_distro().default_version
 
         try:
-            distro = getattr(self._top_object.distros, name)
+            return getattr(self.get_default_distro().versions, version)
         except AttributeError:
-            raise ConfigError(f"No configuration found for distro name '{name}'")
-
-        try:
-            version = self.default_distro.version
-        except AttributeError:
-            version = None
-
-        if not version:
-            version = distro.default_version
-
-        try:
-            return getattr(distro.versions, version)
-        except AttributeError:
-            raise ConfigError(f"No configuration found for distro name '{name}' version '{version}'")
+            raise ConfigError(f"No configuration found for distro name '{self.default_distro.name}' version '{self.default_distro.version}'")
