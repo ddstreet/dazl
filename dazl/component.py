@@ -83,6 +83,11 @@ class Component(SubCommand):
 
     def run_show_components(self):
         components = {k: v._json for k, v in self.top_object.components._items() if k in self.components}
+        missing = set(self.components) - set(components.keys())
+        if missing:
+            print(f"No component found for: {', '.join(missing)}")
+            return -1
+
         print(json.dumps(components, indent=2))
         return 0
 
