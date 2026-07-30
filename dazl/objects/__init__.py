@@ -232,6 +232,7 @@ class FBVObject(FBVContainer, ABC):
     _KEY_CLASSMAP = {}
     _KEY_DEFAULTS = {}
     _KEY_CONVERSIONS = {}
+    _KEY_ALIASES = {}
     _KEY_IGNORES = []
 
     @classmethod
@@ -274,7 +275,11 @@ class FBVObject(FBVContainer, ABC):
 
     @property
     def _json(self):
-        return {k: self._try_json(getattr(self, k)) for k in self}
+        try:
+            return {k: self._try_json(getattr(self, k)) for k in self}
+        except AttributeError as ae:
+            print(f'oops: {ae}')
+            raise
 
     def _process(self):
         while 'includes' in self._fbv:
@@ -363,13 +368,32 @@ class FBVObject(FBVContainer, ABC):
 
         return value
 
-    def __getattr__(self, name):
-        if not name.startswith('_'):
+    def _get_key_aliases(self, key):
+        aliases = self._KEY_ALIASES.get(key, [])
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        return aliases
+
+    def _get_key_value(self, key, aliases, from_dict):
+        for k in [key] + aliases:
             with suppress(KeyError):
-                return self._get_value(self._fbv[name], name)
-            with suppress(KeyError):
-                return self._get_value(self._defaults[name], name)
-        raise AttributeError(name)
+                return self._get_value(from_dict[k], k)
+        raise AttributeError(key)
+
+    def _get_fbv_key_value(self, key, aliases):
+        return self._get_key_value(key, aliases, self._fbv)
+
+    def _get_default_key_value(self, key, aliases):
+        return self._get_key_value(key, aliases, self._defaults)
+
+    def __getattr__(self, key):
+        if not key.startswith('_'):
+            aliases = self._get_key_aliases(key)
+            with suppress(AttributeError):
+                return self._get_fbv_key_value(key, aliases)
+            with suppress(AttributeError):
+                return self._get_default_key_value(key, aliases)
+        raise AttributeError(key)
 
     def __setattr__(self, name, value):
         if not name.startswith('_'):
@@ -430,18 +454,15 @@ class FBVFallbackObject(FBVObject, ABC):
         assert isinstance(fallback, FBVObject)
         return chain(fallback._iter_property_keys, fallback._iter_fbv_keys)
 
-    def __getattr__(self, name):
-        if self._config.no_fallback:
-            return super().__getattr__(name)
-
-        with suppress(KeyError):
-            return self._get_value(self._fbv[name], name)
-        for fallback in self._fallback_list:
-            with suppress(KeyError):
-                return self._get_value(fallback._fbv[name], name)
-        with suppress(KeyError):
-            return self._get_value(self._defaults[name], name)
-        raise AttributeError(name)
+    def _get_fbv_key_value(self, key, aliases):
+        try:
+            return super()._get_fbv_key_value(key, aliases)
+        except AttributeError:
+            if not self._config.no_fallback:
+                for fallback in self._fallback_list:
+                    with suppress(AttributeError):
+                        return fallback._get_fbv_key_value(key, aliases)
+            raise
 
 
 class FBVList(FBVContainer, Sequence):
@@ -502,6 +523,10 @@ class FBVChild:
     def _config(self):
         return self.__top_object._config
 
+    @property
+    def _git(self):
+        return self.__top_object._git
+
 
 class FBVPath:
     pass
@@ -537,8 +562,8 @@ class TopDazlObject(FBVObject):
             raise NotGitRepo(f"Root TOML file '{self.__root_toml_file}' is not in a git repo")
 
     @contextmanager
-    def _get_top_object_at_commit(self, commit):
-        with self._git.get_clonedir_at_commit(commit) as clonedir:
+    def _get_top_object_at_commit(self, commit, readonly=True):
+        with self._git.get_clonedir_at_commit(commit, readonly=readonly) as clonedir:
             yield self.__class__(Path(clonedir) / self._git.relative_path(self.__root_toml_file),
                                  **dataclasses.asdict(self._config))
 

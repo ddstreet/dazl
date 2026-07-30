@@ -5,19 +5,22 @@ from ..exception import ConfigError
 from ..exception import NoConfig
 from . import Conversions
 from . import DazlObject
+from .upstream_distro import UpstreamDistro
 
 
-class DefaultDistro(DazlObject):
-    _KEY_DEFAULTS = {
-        'name': '',
-        'version': '',
-        'snapshot': '',
-    }
+# Remove this class once default version is properly located in project config
+class UpstreamDistroWithDefaultVersion(UpstreamDistro):
+    @property
+    def version(self):
+        try:
+            return getattr(self, 'version')
+        except AttributeError:
+            return self._top_object.project.get_default_distro().default_version
 
 
 class Project(DazlObject):
     _KEY_CLASSMAP = {
-        'default_distro': DefaultDistro,
+        'default_distro': UpstreamDistroWithDefaultVersion,
     }
     _KEY_CONVERSIONS = {
         'dist_git_dir': Conversions.resolve_path,
@@ -40,10 +43,7 @@ class Project(DazlObject):
 
     @cache
     def get_default_distro_version(self):
-        # remove once default version is moved into project
-        version = self.default_distro.version or self.get_default_distro().default_version
-
         try:
-            return getattr(self.get_default_distro().versions, version)
+            return getattr(self.get_default_distro().versions, self.default_distro.version)
         except AttributeError:
             raise ConfigError(f"No configuration found for distro name '{self.default_distro.name}' version '{self.default_distro.version}'")
