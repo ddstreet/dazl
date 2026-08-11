@@ -13,7 +13,7 @@ class UpstreamDistroWithDefaultVersion(UpstreamDistro):
     @property
     def version(self):
         try:
-            return getattr(self, 'version')
+            return getattr(super(), 'version')
         except AttributeError:
             return self._top_object.project.get_default_distro().default_version
 

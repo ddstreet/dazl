@@ -12,4 +12,4 @@ class UpstreamDistro(DazlObject):
 class UpstreamDistroWithFallback(FBVFallbackObject, UpstreamDistro):
     @cached_property
     def _fallback_list(self):
-        return self._top_object.project.default_distro
+        return [self._top_object.project.default_distro]

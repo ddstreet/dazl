@@ -114,6 +114,7 @@ class NamedComponent(Component, NamedDazlObject):
         if not new_specfile.has_autochangelog:
             raise SpecError(f'component {self._name}-{new_specfile.version}-{new_specfile.release} uses autorelease but not autochangelog?')
 
+        print('updating autorelease pkg')
         with self.get_last_release_component() as last_release_component:
             if last_release_component.dist_git.is_remote and self.dist_git.is_remote:
                 last_upstream_commit = last_release_component.dist_git.get_upstream_commit(self._name)
@@ -131,7 +132,11 @@ class NamedComponent(Component, NamedDazlObject):
                 changelog_file_content = ''
         else:
             changelog_file_content = current_specfile.changelog().content
-        new_dist_git.topleveldir.joinpath('changelog').write_text(changelog_file_content)
+        new_changelog_file = new_dist_git.topleveldir / 'changelog'
+        if changelog_file_content:
+            new_changelog_file.write_text(changelog_file_content)
+        else:
+            new_changelog_file.unlink(missing_ok=True)
 
     def _update_bumpspec(self, src, current):
         # manual -> trad *- replace in-spec cl with prev cl, bumpspec
