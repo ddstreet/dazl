@@ -114,14 +114,12 @@ class NamedComponent(Component, NamedDazlObject):
         if not new_specfile.has_autochangelog:
             raise SpecError(f'component {self._name}-{new_specfile.version}-{new_specfile.release} uses autorelease but not autochangelog?')
 
-        print('updating autorelease pkg')
         with self.get_last_release_component() as last_release_component:
             if last_release_component.dist_git.is_remote and self.dist_git.is_remote:
                 last_upstream_commit = last_release_component.dist_git.get_upstream_commit(self._name)
                 new_upstream_commit = self.dist_git.get_upstream_commit(self._name)
                 if last_upstream_commit != new_upstream_commit:
                     upstream_changes = new_dist_git.get_commit_range_log(last_upstream_commit, new_upstream_commit)
-                    print(f'got upstream changes: {upstream_changes}')
 
         current_specfile = current_dist_git.specfile
         if current_specfile.has_autorelease:
